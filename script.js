@@ -1,0 +1,5345 @@
+/* =========================================================
+   SCHOOL MANAGEMENT SYSTEM - script.js
+   Theme: Professional Clean Light Design with Analytics Graph
+   ========================================================= */
+/* ---------------------------------------------------------
+   0. SIDEBAR TOGGLE LOGIC (mobile overlay drawer + desktop collapse)
+   --------------------------------------------------------- */
+function toggleSidebar() {
+    const sidebar = document.getElementById('sidebar');
+    const backdrop = document.getElementById('sidebar-backdrop');
+    if (sidebar) sidebar.classList.toggle('-translate-x-full');
+    if (backdrop) backdrop.classList.toggle('hidden');
+}
+// Auto-close the panel after a menu/nav-link click. Now applies on every
+// screen size — on desktop the CSS above collapses the panel's width to 0
+// (see the min-width:768px block in styles.css) so .main-content reflows
+// to fill the space, giving a full-width view instead of a fixed 256px
+// gap sitting empty; on mobile it still slides off as an overlay, same
+// as before.
+function closeMobileSidebar() {
+    const sidebar = document.getElementById('sidebar');
+    const backdrop = document.getElementById('sidebar-backdrop');
+    if (sidebar) sidebar.classList.add('-translate-x-full');
+    if (backdrop) backdrop.classList.add('hidden');
+}
+// Safety net: collapses the panel on ANY click inside it (any screen
+// size), on top of the specific nav/action buttons above that already
+// call closeMobileSidebar() individually (switchTab links, Load Term,
+// Back to current term, School Finance). This catches every other
+// clickable element in here too — including ones added to the sidebar
+// later without remembering to wire closeMobileSidebar() into their
+// onclick. The Year/Term <select>s are excluded: clicking one just to
+// open/change its value shouldn't collapse the panel out from under the
+// user mid-selection — that still happens once they commit via Load
+// Term's own explicit call.
+document.getElementById('sidebar')?.addEventListener('click', (e) => {
+    if (e.target.closest('select')) return;
+    closeMobileSidebar();
+});
+/* ---------------------------------------------------------
+   1. GLOBAL STATE & DATA
+   --------------------------------------------------------- */
+let studentsList = [];
+// Pagination state for the Student Records admin table specifically.
+// Kept separate from `studentsList` (the full roster, used everywhere
+// else — dropdowns, the Scores/Attendance student pickers, lookups by
+// id) so paging through the table never affects any of those.
+let studentTablePage = 1;
+const STUDENT_TABLE_PAGE_SIZE = 25;
+let studentTableTotal = 0;
+let studentTableTotalPages = 1;
+let marksStorage = {}; 
+let attendanceStorage = {};
+let resourcesList = [];
+let resourceIdCounter = 1;
+let teachersList = [
+    { id: "T001", name: "Sample Teacher One", username: "teacher1", password: "teach123", subject: "MATHEMATICS" },
+    { id: "T002", name: "Sample Teacher Two", username: "teacher2", password: "teach123", subject: "ENGLISH" }
+];
+let currentUser = { username: "", role: "", name: "", studentId: null, teacherId: null };
+const oLevelSubjects = [
+    "ENGLISH", "MATHEMATICS", "PHYSICS", "CHEMISTRY", "BIOLOGY", 
+    "GEOGRAPHY", "HIST & POL EDU", "AGRICULTURE", "CRE", 
+    "FINE ART", "ICT", "ENTREPRENEURSHIP", "PHYSICAL EDUCATION", 
+    "KISWAHILI", "LUGANDA"
+];
+const aLevelSubjects = [
+    "GENERAL PAPER", "SUBSIDIARY MATHEMATICS", "ICT (SUBSIDIARY)", 
+    "MATHEMATICS", "PHYSICS", "CHEMISTRY", "BIOLOGY", "AGRICULTURE", 
+    "ECONOMICS", "ENTREPRENEURSHIP", "GEOGRAPHY", "HISTORY", 
+    "LITERATURE IN ENGLISH", "CRE", "ART", "LUGANDA"
+];
+const subsidiarySubjects = ["GENERAL PAPER", "SUBSIDIARY MATHEMATICS", "ICT (SUBSIDIARY)"];
+let performanceChartInstance = null;
+let gradeDistributionChartInstance = null;
+let dashboardClassChartInstance = null;
+let myPerformanceTrendChartInstance = null;
+let performersLevelView = 'O-Level'; // toggle state for the Best & Worst Performers panel
+/* ---------------------------------------------------------
+   1e. ADMIN NOTICE BOARD / SCHOOL BULLETIN (Dashboard widget)
+   Backed by the `notices` table via NoticesAPI (see api.js +
+   kss-backend/routes/notices.routes.js), the same remote-first/
+   local-fallback pattern used by resourcesList etc. below.
+   Deliberately starts empty with no hardcoded/demo notices and no
+   localStorage persistence: the backend is the single source of
+   truth, so a deleted notice can never silently reappear on reload
+   the way a stale localStorage fallback previously did.
+   --------------------------------------------------------- */
+let noticesList = [];
+let noticeIdCounter = 1;
+/* ---------------------------------------------------------
+   1c. TERM / CALENDAR SETTINGS (persisted in memory)
+   Holds the currently selected term, year, and the upcoming
+   term's start/end dates so they survive switching tabs and
+   are reliably pulled into every generated report card.
+   --------------------------------------------------------- */
+let termSettings = {
+    term: 'Term 1',
+    year: new Date().getFullYear(),
+    nextBegins: '',
+    nextEnds: ''
+};
+/* ---------------------------------------------------------
+   1c-bis. VIEWED TERM (multi-term data switching)
+   termSettings above is the SCHOOL's current active term (Admin-managed,
+   e.g. what's printed on new report cards). selectedTerm/selectedYear is a
+   separate concept: which term THIS USER is currently looking at in
+   Scores/Attendance/Reports. They're independent on purpose — a teacher
+   should be able to open Term 1's marks for review while the school has
+   already moved into Term 2, without that view being clobbered by (or
+   clobbering) the live term.
+   null/null means "not explicitly switched yet — follow the current term";
+   getViewedTermYear() below is what every scores/attendance call site
+   should use instead of reading termSettings directly.
+   termHistory holds every {term, year} combination that actually has data
+   on file (see refreshTermHistory), used to populate the switcher dropdown.
+   --------------------------------------------------------- */
+let selectedTerm = null;
+let selectedYear = null;
+let termHistory = [];
+function getViewedTermYear() {
+    return { term: selectedTerm || termSettings.term, year: selectedYear || termSettings.year };
+}
+/* ---------------------------------------------------------
+   1c2. REPORT CARD REMARKS (Class Teacher's / Headteacher's
+   comments) — keyed by student+term+year.
+   This in-memory object is now hydrated from the backend
+   (report_card_remarks table, via RemarksAPI — see
+   refreshReportRemarksForStudent / migrateLocalReportRemarksToServer
+   below) so a comment typed on one device is visible on every other
+   device/browser. localStorage is kept ONLY as a best-effort offline
+   cache/fallback — it is no longer the source of truth, and any data
+   still sitting in it from before this change gets auto-rescued to
+   the server once, at next login (see migrateLocalReportRemarksToServer).
+   --------------------------------------------------------- */
+let reportRemarksStorage = {};
+try {
+    const storedReportRemarks = localStorage.getItem('kss_report_remarks');
+    if (storedReportRemarks) reportRemarksStorage = JSON.parse(storedReportRemarks);
+} catch (e) { /* localStorage unavailable — remarks simply won't persist across reloads */ }
+/* ---------------------------------------------------------
+   1b. AO (ACTIVITY OF INTEGRATION) AVERAGE HELPER
+   Rule: only average AO1 + AO2 together when BOTH have a valid,
+   non-zero score entered. If only one AO score is present, the
+   "Av. Score" equals that single score directly (no /2 penalty).
+   --------------------------------------------------------- */
+function calculateAOAverage(ao1Raw, ao2Raw) {
+    const ao1 = Number(ao1Raw) || 0;
+    const ao2 = Number(ao2Raw) || 0;
+    if (ao1 > 0 && ao2 > 0) return (ao1 + ao2) / 2;
+    if (ao1 > 0) return ao1;
+    if (ao2 > 0) return ao2;
+    return 0;
+}
+/* ---------------------------------------------------------
+   1b-i. SCORE DISPLAY FORMATTER
+   Purely cosmetic helper: the backend's NUMERIC(5,2) columns
+   come back as strings like "0.00" / "2.50". This normalizes
+   any AO-style float score to exactly one decimal place for
+   display only — it never touches the underlying stored value
+   or any calculation, which continue to use the raw number.
+   --------------------------------------------------------- */
+function formatAOScoreDisplay(raw, emptyValue) {
+    if (raw === null || raw === undefined || raw === '') return emptyValue;
+    const n = Number(raw);
+    if (isNaN(n)) return emptyValue;
+    if (n === 0) return emptyValue;
+    return n.toFixed(1);
+}
+/* ---------------------------------------------------------
+   1b-ii. WHOLE-NUMBER SCORE DISPLAY FORMATTER
+   Same reasoning as formatAOScoreDisplay above, but for EOT-style
+   marks that are meant to be plain whole numbers (e.g. "80", "0")
+   rather than decimals — the backend's NUMERIC(5,2) column still
+   returns strings like "80.00", so this strips the decimal part
+   for display only. No calculation uses this value.
+   --------------------------------------------------------- */
+function formatWholeScoreDisplay(raw, emptyValue) {
+    if (raw === null || raw === undefined || raw === '') return emptyValue;
+    const n = Number(raw);
+    if (isNaN(n)) return emptyValue;
+    if (n === 0) return emptyValue;
+    return String(Math.round(n));
+}
+/* ---------------------------------------------------------
+   1b-iii. A-LEVEL SUBJECT DISPLAY NAME FORMATTER
+   Purely cosmetic: strips a trailing "(SUBSIDIARY)" tag (e.g.
+   "ICT (SUBSIDIARY)" -> "ICT") for on-screen display in the
+   A-Level report card only. It never touches the canonical
+   subject string itself, which stays exactly as-is everywhere
+   else (aLevelSubjects, subsidiarySubjects, marksStorage keys,
+   grading logic) so nothing about how a subject is looked up,
+   matched, or graded changes. "SUBSIDIARY MATHEMATICS" is left
+   alone since it has no "(SUBSIDIARY)" suffix to strip.
+   --------------------------------------------------------- */
+function formatALevelSubjectDisplayName(subj) {
+    return subj.replace(/\s*\(SUBSIDIARY\)/i, '');
+}
+/* ---------------------------------------------------------
+   1b-iv. HTML ESCAPE HELPER (for any free-text user input we
+   render back into the DOM, e.g. report card remarks)
+   --------------------------------------------------------- */
+function escapeHTML(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+/* ---------------------------------------------------------
+   1b-iv-b. IMAGE RESIZE-BEFORE-UPLOAD (student photos)
+   A raw phone photo can easily be 3-12MB — multiplied across a whole
+   school's worth of students, that's a real cost in Blob storage AND
+   in load time the moment more than one photo needs to render at once
+   (e.g. "Print Whole Class" report cards, which already puts every
+   student's full report on one page). This shrinks + re-encodes the
+   image client-side, BEFORE it's ever uploaded, so what actually
+   leaves the browser is already small.
+   maxDim=400 is comfortably larger than the 52x52px box this ever
+   renders into (report card / profile modal), so there's no visible
+   quality loss at display size — this is not a thumbnail generator,
+   just a sane upper bound so a photo taken on a modern phone camera
+   doesn't upload at its full multi-thousand-pixel original size.
+   Returns a Blob (JPEG) via the browser's own canvas encoder — no
+   image-processing library needed for this.
+   --------------------------------------------------------- */
+function resizeImageFile(file, maxDim = 400, quality = 0.8) {
+    return new Promise((resolve, reject) => {
+        const img = new Image();
+        const objectUrl = URL.createObjectURL(file);
+        img.onload = () => {
+            URL.revokeObjectURL(objectUrl);
+            let { width, height } = img;
+            if (width > maxDim || height > maxDim) {
+                if (width >= height) {
+                    height = Math.round(height * (maxDim / width));
+                    width = maxDim;
+                } else {
+                    width = Math.round(width * (maxDim / height));
+                    height = maxDim;
+                }
+            }
+            const canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+            canvas.toBlob(
+                (blob) => blob ? resolve(blob) : reject(new Error('Could not process this image.')),
+                'image/jpeg',
+                quality
+            );
+        };
+        img.onerror = () => {
+            URL.revokeObjectURL(objectUrl);
+            reject(new Error('That file could not be read as an image.'));
+        };
+        img.src = objectUrl;
+    });
+}
+/* ---------------------------------------------------------
+   1b-iv. REPORT CARD REMARKS HELPERS
+   Class Teacher's / Headteacher's comment fields on the report
+   card footer. Purely additive productivity feature — does not
+   touch marksStorage, grading, or any backend route.
+   --------------------------------------------------------- */
+function getReportRemarkKey(studentId, term, year) {
+    return `${studentId}_${term}_${year}`;
+}
+function getReportRemark(studentId, term, year, field) {
+    const key = getReportRemarkKey(studentId, term, year);
+    return (reportRemarksStorage[key] && reportRemarksStorage[key][field]) || '';
+}
+function persistReportRemarks() {
+    try { localStorage.setItem('kss_report_remarks', JSON.stringify(reportRemarksStorage)); }
+    catch (e) { /* best-effort only */ }
+}
+// Debounce so every keystroke in the contenteditable comment box doesn't
+// fire its own network request — one save goes out ~800ms after typing
+// pauses, keyed per remark-row so typing in one field never cancels a
+// pending save for another.
+const reportRemarkSaveTimers = {};
+function saveReportRemark(el) {
+    if (!getPermissions(currentUser.role).canViewAllReports) return; // RBAC guard
+    const key = el.dataset.remarkKey;
+    const field = el.dataset.remarkField;
+    if (!key || !field) return;
+    if (!reportRemarksStorage[key]) reportRemarksStorage[key] = {};
+    reportRemarksStorage[key][field] = el.innerText.trim();
+    persistReportRemarks(); // best-effort offline cache only — see note above
+
+    clearTimeout(reportRemarkSaveTimers[key]);
+    reportRemarkSaveTimers[key] = setTimeout(() => {
+        const parts = key.split('_');
+        if (parts.length !== 3) return; // defensive: unexpected key shape, skip remote save
+        const [studentId, term, year] = parts;
+        RemarksAPI.save(studentId, term, year, { [field]: reportRemarksStorage[key][field] })
+            .catch(() => { /* offline/unreachable — localStorage copy above still holds the latest text; will be rescued at next login */ });
+    }, 800);
+}
+// Builds one "LABEL: ______" footer row. When editable, the line is a
+// contenteditable div the admin/teacher can type straight into before
+// printing; when read-only (the Student's own report view) it's a plain
+// span, exactly as before.
+function buildCommentRow(label, studentId, term, year, field, editable) {
+    const key = getReportRemarkKey(studentId, term, year);
+    const value = getReportRemark(studentId, term, year, field);
+    if (editable) {
+        return `
+                <div class="rc-comment-row">
+                    <span class="rc-comment-label">${label}:</span>
+                    <div class="rc-comment-line rc-comment-editable" contenteditable="true" data-remark-key="${key}" data-remark-field="${field}" oninput="saveReportRemark(this)" data-placeholder="Click to type a comment&hellip;">${value ? escapeHTML(value) : ''}</div>
+                </div>`;
+    }
+    return `
+                <div class="rc-comment-row">
+                    <span class="rc-comment-label">${label}:</span>
+                    <span class="rc-comment-line">${value ? escapeHTML(value) : '&nbsp;'}</span>
+                </div>`;
+}
+/* ---------------------------------------------------------
+   1d. REMOTE DATA SYNC
+   studentsList starts empty (no hardcoded demo rows) and is
+   populated entirely from the backend below; teachersList/
+   resourcesList/termSettings still seed with placeholder data
+   purely so the UI has something to render before the first
+   successful API call. Once the backend is reachable, these
+   helpers pull the real Neon-backed state and keep the in-memory
+   copies in sync with it — every
+   create/update/delete below re-syncs from the server afterwards
+   rather than only mutating the local array, so a page refresh
+   (or a second device) sees the same data the database has.
+   Each is best-effort: if the backend call fails (offline/local
+   demo mode) the existing in-memory list is left untouched.
+   --------------------------------------------------------- */
+async function refreshStudentsList() {
+    try {
+        const remote = await StudentsAPI.list();
+        if (Array.isArray(remote)) studentsList = remote;
+    } catch (e) { /* keep existing local list */ }
+}
+async function refreshTeachersList() {
+    try {
+        const remote = await TeachersAPI.list();
+        if (Array.isArray(remote)) teachersList = remote;
+    } catch (e) { /* keep existing local list */ }
+}
+async function refreshResourcesList() {
+    try {
+        const remote = await ResourcesAPI.list();
+        if (Array.isArray(remote)) resourcesList = remote;
+    } catch (e) { /* keep existing local list */ }
+}
+async function refreshTermSettings() {
+    try {
+        const remote = await TermAPI.get();
+        if (remote) termSettings = remote;
+    } catch (e) { /* keep existing local settings */ }
+}
+async function refreshNoticesList() {
+    try {
+        const remote = await NoticesAPI.list();
+        if (Array.isArray(remote)) noticesList = remote;
+    } catch (e) { /* keep existing local list */ }
+}
+async function refreshScoresList() {
+    // marksStorage is keyed by recordKey ("SUBJECT_studentId_Term X_YYYY"),
+    // same convention the backend uses for scores.record_key — just re-key
+    // the rows the API returns into that shape. Grading/report-card logic
+    // (section 6 below) reads marksStorage the same way either way, so
+    // nothing about how marks are calculated or displayed changes.
+    // Always scoped to the term currently being viewed (getViewedTermYear),
+    // never the whole table — this is what keeps Term 1's marks separate
+    // from Term 2's in memory, not just in the database.
+    try {
+        const remote = await ScoresAPI.list(undefined, undefined, getViewedTermYear());
+        if (Array.isArray(remote)) {
+            const rehydrated = {};
+            remote.forEach(row => {
+                rehydrated[row.recordKey] = {
+                    ao1: row.ao1, ao2: row.ao2, eot: row.eot,
+                    p1: row.p1, p2: row.p2,
+                    remarks: row.remarks, touched: row.touched
+                };
+            });
+            marksStorage = rehydrated;
+        }
+    } catch (e) { /* keep existing local marksStorage */ }
+}
+// Every {term, year} combination that has data on file, for the sidebar
+// term/year switcher (see renderTermSwitcher / handleTermSwitcherChange).
+async function refreshTermHistory() {
+    try {
+        const remote = await TermAPI.history();
+        if (Array.isArray(remote) && remote.length) termHistory = remote;
+    } catch (e) { /* keep existing local termHistory */ }
+}
+// Fixed academic term names — always offered in the Term dropdown
+// regardless of whether that term has any data on file yet, so an
+// Admin/Teacher can switch into a brand-new term (e.g. right after
+// updating Term Settings) instead of only ever seeing terms that
+// already have scores/attendance saved.
+const TERM_NAMES = ['Term 1', 'Term 2', 'Term 3'];
+// Academic years offered in the Year dropdown: every year that already
+// has data on file, plus the school's current active year and the year
+// right after it (so admins can plan/switch ahead of time), deduplicated
+// and sorted newest first.
+function getTermSwitcherYearOptions() {
+    const years = new Set(termHistory.map(o => Number(o.year)));
+    years.add(Number(termSettings.year));
+    years.add(Number(termSettings.year) + 1);
+    return [...years].sort((a, b) => b - a);
+}
+// Shared by handleTermSwitcherChange and resetTermSwitcherToCurrent: pulls
+// fresh data for whatever term/year is now being viewed and re-renders
+// everything that depends on it, so a switch never leaves a stale mix of
+// two terms' data on screen.
+async function applyTermSwitch() {
+    await Promise.all([
+        refreshScoresList(),
+        refreshAttendanceForTerm(selectedTerm, selectedYear)
+    ]);
+    renderTermSwitcher();
+    updateDashboardStats();
+    // Re-render whichever screen is currently open so the switch is
+    // reflected immediately rather than only on next navigation.
+    if (typeof refreshCurrentTabView === 'function') refreshCurrentTabView();
+}
+// Fired when the user picks a different term or year in the sidebar
+// switcher. Always receives both values (whichever <select> didn't fire
+// the change event still reads its own current value), so this fully
+// re-scopes selectedTerm/selectedYear together rather than only updating
+// the one dropdown that changed.
+async function handleTermSwitcherChange(term, year) {
+    selectedTerm = term;
+    selectedYear = Number(year);
+    await applyTermSwitch();
+}
+// Fired by the "Load Term" button. The Year/Term <select>s only track a
+// pending choice as the user browses them (no onchange handler of their
+// own) — nothing actually re-fetches or re-renders until this runs, so
+// clicking through a few options doesn't fire a burst of network requests.
+async function loadSelectedTerm() {
+    const yearEl = document.getElementById('sidebar-term-year');
+    const termEl = document.getElementById('sidebar-term-term');
+    if (!yearEl || !termEl) return;
+    await handleTermSwitcherChange(termEl.value, yearEl.value);
+}
+// "Back to current term" — drops back to following the school's live
+// active term (termSettings) instead of whatever was explicitly selected.
+async function resetTermSwitcherToCurrent() {
+    selectedTerm = null;
+    selectedYear = null;
+    await applyTermSwitch();
+}
+// Populates/refreshes the sidebar's Year + Term selects from
+// getTermSwitcherYearOptions()/TERM_NAMES, selecting whichever term/year
+// is currently being viewed, and shows/hides the whole block by role —
+// every role (Admin/Teacher/Student) can browse other terms now; a
+// Student's underlying data is still always scoped to their own
+// studentId server-side (see routes/scores.routes.js etc.), so this only
+// changes which term of THEIR OWN data they can look at, never whose.
+function renderTermSwitcher() {
+    const wrap = document.getElementById('sidebar-term-switcher');
+    const yearEl = document.getElementById('sidebar-term-year');
+    const termEl = document.getElementById('sidebar-term-term');
+    const resetBtn = document.getElementById('sidebar-term-reset');
+    if (!wrap || !yearEl || !termEl) return;
+
+    const canSwitch = getPermissions(currentUser.role).canSwitchTerm; // true for Admin, Teacher & Student
+    wrap.classList.toggle('hidden', !canSwitch);
+    if (!canSwitch) return;
+
+    const viewed = getViewedTermYear();
+
+    yearEl.innerHTML = getTermSwitcherYearOptions().map(y => {
+        const selected = Number(y) === Number(viewed.year) ? ' selected' : '';
+        return `<option value="${y}"${selected}>${y}</option>`;
+    }).join('');
+
+    termEl.innerHTML = TERM_NAMES.map(t => {
+        const selected = t === viewed.term ? ' selected' : '';
+        return `<option value="${escapeHTML(t)}"${selected}>${escapeHTML(t)}</option>`;
+    }).join('');
+
+    // Only show "Back to current term" once the user has actually strayed
+    // from the live term — otherwise it's a dead-looking button doing
+    // nothing on the screen they're already on.
+    const isViewingCurrent = selectedTerm === null && selectedYear === null;
+    if (resetBtn) resetBtn.classList.toggle('hidden', isViewingCurrent);
+}
+async function refreshAttendanceList() {
+    // attendanceStorage is keyed by recordKey ("date_studentId"), same
+    // convention the backend uses for attendance.record_key — the rows the
+    // API returns map onto it directly (just recordKey -> status).
+    // Scoped to the last ~6 months: the register only ever looks at one
+    // date at a time, and this table gains a new row per student per day,
+    // so at 300+ students an unbounded fetch here grows every term. A
+    // student's full history (needed for their report-card attendance %)
+    // is fetched separately and on demand — see refreshAttendanceForStudent.
+    const sixMonthsAgo = new Date();
+    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+    const sinceDate = sixMonthsAgo.toISOString().slice(0, 10);
+    try {
+        const remote = await AttendanceAPI.listRecent(sinceDate);
+        if (Array.isArray(remote)) {
+            const rehydrated = {};
+            remote.forEach(row => { rehydrated[row.recordKey] = row.status; });
+            attendanceStorage = rehydrated;
+        }
+    } catch (e) { /* keep existing local attendanceStorage */ }
+}
+// Pulls one student's full attendance history on demand (report cards need
+// an accurate lifetime %, but there's no need to fetch it for every student
+// until their report is actually being generated). Merges into the existing
+// attendanceStorage rather than replacing it, so the recent-window data
+// loaded at login isn't lost for other students.
+async function refreshAttendanceForStudent(studentId) {
+    try {
+        const remote = await AttendanceAPI.listForStudent(studentId);
+        if (Array.isArray(remote)) {
+            remote.forEach(row => { attendanceStorage[row.recordKey] = row.status; });
+        }
+    } catch (e) { /* keep existing local attendanceStorage for this student */ }
+}
+// Pulls one term's full attendance register (all classes/dates within it)
+// and REPLACES attendanceStorage rather than merging — unlike the
+// rolling-window/per-student helpers above, this backs the Attendance tab
+// while a past term is being viewed, so it must show only that term's
+// register, not a mix of the recent window plus the requested term.
+async function refreshAttendanceForTerm(term, year) {
+    try {
+        const remote = await AttendanceAPI.listForTerm(term, year);
+        if (Array.isArray(remote)) {
+            const rehydrated = {};
+            remote.forEach(row => { rehydrated[row.recordKey] = row.status; });
+            attendanceStorage = rehydrated;
+        }
+    } catch (e) { /* keep existing local attendanceStorage */ }
+}
+// Pulls one student's report-card remarks (every term/year on file) from
+// the backend and merges them into reportRemarksStorage, same on-demand,
+// merge-not-replace pattern as refreshAttendanceForStudent above. Called
+// right before that student's report card is rendered — see
+// generateReportCards (admin/teacher) and applySessionUser (student).
+async function refreshReportRemarksForStudent(studentId) {
+    try {
+        const remote = await RemarksAPI.listForStudent(studentId);
+        if (Array.isArray(remote)) {
+            remote.forEach(row => {
+                const key = getReportRemarkKey(row.studentId, row.term, row.year);
+                reportRemarksStorage[key] = {
+                    classTeacherComment: row.classTeacherComment || '',
+                    headteacherComment: row.headteacherComment || ''
+                };
+            });
+        }
+    } catch (e) { /* keep existing local reportRemarksStorage for this student */ }
+}
+// ONE-TIME RESCUE MIGRATION: pushes any comments still sitting in this
+// browser's localStorage (from before comments were synced to the backend)
+// up to the server, then marks itself done so it doesn't resubmit on every
+// future login. Only Admin/Teacher accounts can ever have local comments to
+// rescue (students can never type into these fields — see the `editable`
+// guard on buildCommentRow), so this only runs for those roles. Best-effort
+// and non-blocking: a failure here must never stop login or report
+// rendering, and unmigrated entries simply get retried at the next login.
+async function migrateLocalReportRemarksToServer() {
+    if (getPermissions(currentUser.role).canViewAllReports !== true) return;
+    try {
+        if (localStorage.getItem('kss_report_remarks_migrated') === 'true') return;
+    } catch (e) { return; } // no localStorage access — nothing to rescue
+
+    let localRemarks = {};
+    try {
+        const raw = localStorage.getItem('kss_report_remarks');
+        if (raw) localRemarks = JSON.parse(raw);
+    } catch (e) { return; }
+
+    const keys = Object.keys(localRemarks);
+    if (keys.length === 0) {
+        try { localStorage.setItem('kss_report_remarks_migrated', 'true'); } catch (e) { /* ignore */ }
+        return;
+    }
+
+    let allSucceeded = true;
+    await Promise.all(keys.map(async (key) => {
+        const entry = localRemarks[key];
+        const parts = key.split('_');
+        if (parts.length !== 3 || !entry) return; // defensive: skip anything not in the expected shape
+        const [studentId, term, year] = parts;
+        const classTeacherComment = entry.classTeacherComment || '';
+        const headteacherComment = entry.headteacherComment || '';
+        if (!classTeacherComment && !headteacherComment) return; // nothing to rescue for this key
+
+        try {
+            await RemarksAPI.save(studentId, term, year, { classTeacherComment, headteacherComment });
+            reportRemarksStorage[key] = { classTeacherComment, headteacherComment };
+        } catch (e) {
+            allSucceeded = false; // network/server issue — leave localStorage copy intact, retry next login
+        }
+    }));
+
+    if (allSucceeded) {
+        try { localStorage.setItem('kss_report_remarks_migrated', 'true'); } catch (e) { /* ignore */ }
+    }
+}
+async function syncAllRemoteData() {
+    // refreshTermSettings must resolve BEFORE refreshScoresList/refreshTermHistory:
+    // getViewedTermYear() falls back to termSettings when the user hasn't
+    // explicitly switched terms yet, so scores would fetch the wrong term on
+    // first login if this ran in the same Promise.all batch as the rest.
+    await refreshTermSettings();
+    await Promise.all([
+        refreshStudentsList(),
+        refreshTeachersList(),
+        refreshResourcesList(),
+        refreshScoresList(),
+        refreshAttendanceList(),
+        refreshNoticesList(),
+        refreshTermHistory()
+    ]);
+}
+/* ---------------------------------------------------------
+   2. AUTHENTICATION & NAVIGATION
+   --------------------------------------------------------- */
+// Defensive helper: safely reads an <input>/<select>/<textarea> value by id
+// instead of throwing "Cannot read properties of null" when the element
+// isn't in the DOM yet (e.g. a tab that hasn't finished rendering, or a
+// form container that got dropped by a bad merge).
+function getInputValue(id, fallback = '') {
+    const el = document.getElementById(id);
+    return el ? el.value : fallback;
+}
+async function handleLogin(event) {
+    event.preventDefault();
+    const usernameEl = document.getElementById('login-username');
+    const passwordEl = document.getElementById('login-password');
+    const errorBox = document.getElementById('login-error');
+    const submitBtn = event.target.querySelector('button[type="submit"]');
+    if (!usernameEl || !passwordEl) return; // login form isn't in the DOM — nothing we can safely do
+    const username = usernameEl.value.trim();
+    const password = passwordEl.value;
+
+    if (username === "" || password.trim() === "") {
+        if (errorBox) {
+            errorBox.innerText = "Please enter both a username and password.";
+            errorBox.classList.remove('hidden');
+        }
+        return;
+    }
+
+    if (errorBox) errorBox.classList.add('hidden');
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.innerText = "Signing in..."; }
+
+    // AuthAPI (see api.js) tries the real Node.js backend first
+    // (POST /api/auth/login) and only falls back to local demo
+    // accounts if the backend is unreachable — no code here changes
+    // once the backend is deployed.
+    const result = await AuthAPI.login(username, password);
+
+    if (submitBtn) { submitBtn.disabled = false; submitBtn.innerHTML = '<i class="fa-solid fa-right-to-bracket"></i> Login'; }
+
+    if (!result.ok) {
+        if (errorBox) {
+            errorBox.innerText = result.message || "Invalid username or password.";
+            errorBox.classList.remove('hidden');
+        }
+        return;
+    }
+
+    await applySessionUser(result.user);
+}
+async function applySessionUser(user) {
+    currentUser.username = user.username;
+    currentUser.role = user.role;
+    currentUser.name = user.name || user.username;
+    currentUser.studentId = user.studentId || null;
+    currentUser.teacherId = user.teacherId || null;
+
+    const loginSection = document.getElementById('login-section');
+    const dashboardSection = document.getElementById('dashboard-section');
+    if (loginSection) loginSection.classList.add('hidden');
+    if (dashboardSection) dashboardSection.classList.remove('hidden');
+
+    // Pull the current, authoritative state from the backend/Neon before
+    // rendering anything below, so the dashboard reflects real data
+    // instead of the hardcoded demo lists.
+    await syncAllRemoteData();
+
+    // Report card remarks (Class Teacher's / Headteacher's comments):
+    // rescue any comments still sitting only in this device's localStorage
+    // (from before report_card_remarks existed) and push them to the
+    // server — see migrateLocalReportRemarksToServer for why this only
+    // applies to Admin/Teacher (Students never write remarks, so a
+    // Student login has nothing local worth rescuing). For a Student,
+    // instead just pull their own remarks from the server so "My Report
+    // Card" reflects whatever a teacher already saved on another device.
+    if (getPermissions(currentUser.role).canViewAllReports) {
+        await migrateLocalReportRemarksToServer();
+    } else if (currentUser.studentId) {
+        await refreshReportRemarksForStudent(currentUser.studentId);
+    }
+
+    const userBadge = document.getElementById('user-badge');
+    if (userBadge) userBadge.innerText = `Logged in: ${currentUser.username}`;
+
+    const roleTag = document.getElementById('user-role-tag');
+    if (roleTag) roleTag.innerText = currentUser.role;
+
+    // Reset the viewed term to "follow current" on every fresh login, then
+    // render the switcher — this deliberately does NOT persist selectedTerm
+    // across logins, so a user always lands on the live term first and has
+    // to explicitly choose to look at history each session.
+    selectedTerm = null;
+    selectedYear = null;
+    renderTermSwitcher();
+
+    const banner = document.getElementById('welcome-banner');
+    if (banner) {
+        const greetings = {
+            [ROLES.ADMIN]: `Full administrative access &mdash; classes, students, subjects, term dates, user roles, and system-wide records.`,
+            [ROLES.TEACHER]: `You have view access across the system, with permission to add and update learner scores.`,
+            [ROLES.STUDENT]: `This view is limited to your own dashboard summary, report card, and shared learning resources.`,
+            [ROLES.BURSAR]: `Your access is limited to School Finance &mdash; student fees, expenses, and revenues.`,
+            [ROLES.HR]: `Your access covers School Finance and Staff Payroll.`,
+            [ROLES.DIRECTOR]: `Your access covers School Finance and Staff Payroll.`
+        };
+        banner.innerHTML = `Welcome back, <span class="text-yellow-400">${currentUser.name || currentUser.username}</span><span class="banner-subtext">${greetings[currentUser.role] || ''}</span>`;
+        banner.classList.add('visible');
+    }
+
+    renderSidebarNav();
+    switchTab(getPermissions(currentUser.role).defaultTab);
+    updateDashboardStats();
+}
+function handleLogout() {
+    AuthAPI.logout();
+    // sessionStorage is per-tab, not per-user — on a shared browser, a
+    // stale Finance unlock would otherwise silently carry over to
+    // whoever logs in next on this same tab. Clear it explicitly so
+    // the next user always has to enter their own Finance password.
+    FinanceAuthAPI.lock();
+    // sessionStorage is per-tab, not per-user — on a shared browser, a
+    // stale Finance unlock would otherwise silently carry over to
+    // whoever logs in next on this same tab. Clear it explicitly so
+    // the next user always has to enter their own Finance password.
+    FinanceAuthAPI.lock();
+    currentUser.username = "";
+    currentUser.role = "";
+    currentUser.name = "";
+    currentUser.studentId = null;
+    currentUser.teacherId = null;
+    const dashboardSection = document.getElementById('dashboard-section');
+    const loginSection = document.getElementById('login-section');
+    const usernameEl = document.getElementById('login-username');
+    const passwordEl = document.getElementById('login-password');
+    if (dashboardSection) dashboardSection.classList.add('hidden');
+    if (loginSection) loginSection.classList.remove('hidden');
+    if (usernameEl) usernameEl.value = "";
+    if (passwordEl) passwordEl.value = "";
+}
+function renderSidebarNav() {
+    const nav = document.getElementById('sidebar-nav');
+    if (!nav) return;
+    const allowedTabs = getPermissions(currentUser.role).tabs;
+    // `group` drives the sticky section headings below — items are grouped as:
+    // main (Dashboard) / academics (Students..Attendance) / people & resources
+    // (Resources..Subject Marks Status) / admin & tools (Activity Log, Class
+    // Summaries, Teacher Toolbox — and, via renderFinanceNavItem(), School
+    // Finance, which shares this same visual group).
+    const GROUP_LABELS = {
+        'main': 'Overview',
+        'academics': 'Academics',
+        'people-resources': 'People & Resources',
+        'admin-tools': 'Admin & Tools'
+    };
+    const items = [
+        { id: 'dashboard', label: 'Dashboard', icon: 'fa-gauge-high', group: 'main' },
+        { id: 'students', label: 'Students', icon: 'fa-user-graduate', group: 'academics' },
+        { id: 'scores', label: 'Scores', icon: 'fa-pen-to-square', group: 'academics' },
+        { id: 'reports', label: currentUser.role === 'Student' ? 'My Report Card' : 'Report Cards', icon: 'fa-file-lines', group: 'academics' },
+        { id: 'analytics', label: 'Analytics', icon: 'fa-chart-column', group: 'academics' },
+        { id: 'performers', label: 'Best & Worst Performers', icon: 'fa-ranking-star', group: 'academics' },
+        { id: 'attendance', label: 'Attendance', icon: 'fa-calendar-check', group: 'academics' },
+        { id: 'resources', label: currentUser.role === 'Student' ? 'Learning Resources' : 'Resources', icon: 'fa-folder-open', group: 'people-resources' },
+        { id: 'teachers', label: currentUser.role === 'Teacher' ? 'My Profile' : 'Teachers', icon: 'fa-chalkboard-user', group: 'people-resources' },
+        { id: 'subjectmarksstatus', label: 'Subject Marks Status', icon: 'fa-list-check', group: 'people-resources' },
+        { id: 'activitylog', label: 'Activity Log', icon: 'fa-clock-rotate-left', group: 'admin-tools' },
+        // New nav entry only — Class Score Summaries feature (class-summaries.js).
+        // Gated by ROLE_PERMISSIONS in api.js exactly like every other item here.
+        { id: 'classsummaries', label: 'Class Score Summaries', icon: 'fa-table-list', group: 'admin-tools' },
+        // New nav entry only — AI Teacher Toolbox feature (teacher-toolbox.js).
+        // Gated by ROLE_PERMISSIONS in api.js (Teacher/Administrator only).
+        // "aitoolbox" now lives in ROLE_PERMISSIONS.tabs (api.js) like every
+        // other item, so it's routed and styled through the exact same path
+        // as "School Finance" and "Activity Log" — no separate disabled/
+        // reduced-opacity treatment.
+        { id: 'aitoolbox', label: 'Teacher Toolbox', icon: 'fa-wand-magic-sparkles', group: 'admin-tools' },
+        // New nav entry only — Admin Staff Management feature
+        // (staff-management.js). Administrator-only, gated by
+        // ROLE_PERMISSIONS.tabs in api.js exactly like every other item
+        // here (only Administrator's tabs[] includes 'staffmanagement').
+        { id: 'staffmanagement', label: 'Staff Management', icon: 'fa-users-gear', group: 'admin-tools' }
+    ].filter(item => allowedTabs.includes(item.id));
+    // NOTE ON COLORS: the sidebar's background is dark navy (--navy-900, see
+    // styles.css), so unselected items use a light slate (#e2e8f0) instead of
+    // the dark slate previously used here, which was unreadable against the
+    // dark background. Hover/selected states use white for maximum contrast.
+    let previousGroup = null;
+    // "School Finance" (renderFinanceNavItem) is a standalone placeholder
+    // button, not a real routed tab — it always belongs at the end of the
+    // last real item's group (admin-tools) if that group has any visible
+    // items, or gets its own heading if it's the only thing an Admin/
+    // Teacher would otherwise see in that section.
+    const financeHtml = renderFinanceNavItem();
+    nav.innerHTML = items.map(item => {
+        // A real sticky heading (not just a thin divider) whenever the
+        // section changes, so related items (e.g. the academics block)
+        // read as one labeled group even while scrolling past it.
+        const heading = (item.group !== previousGroup)
+            ? `<div class="sidebar-nav-heading">${escapeHTML(GROUP_LABELS[item.group] || item.group)}</div>` : '';
+        previousGroup = item.group;
+        return `${heading}<button id="nav-${item.id}" onclick="switchTab('${item.id}'); closeMobileSidebar();" class="${SIDEBAR_NAV_INACTIVE_CLASS}">
+            <i class="fa-solid ${item.icon} w-4 text-center"></i><span>${item.label}</span>
+        </button>`;
+    }).join('') + (financeHtml
+        ? (previousGroup === 'admin-tools' ? financeHtml : `<div class="sidebar-nav-heading">${escapeHTML(GROUP_LABELS['admin-tools'])}</div>${financeHtml}`)
+        : '');
+}
+// Shared class strings for sidebar nav buttons, so the active state
+// (switchTab), inactive state (renderSidebarNav), and the School Finance
+// placeholder (renderFinanceNavItem) always stay visually identical —
+// same font weight, tracking, color and interactivity, with only the
+// active item picking up the glowing left-border accent + fill.
+const SIDEBAR_NAV_BASE_CLASS = "flex items-center gap-3 w-full text-left py-2.5 px-4 rounded-lg text-xs font-extrabold uppercase tracking-wide border-l-[3px] transition-all duration-200 ease-in-out mb-1";
+// Dark Neumorphic inset: a soft near-black surface (#18191c, barely
+// distinct from the --navy-900 panel it sits on) with a dual inset
+// shadow — dark on the top-left, a faint highlight on the bottom-right —
+// so each resting nav row reads as pressed/carved into the sidebar
+// rather than a flat button. Hover lightens the surface slightly and
+// deepens the shadow a touch so the row still visibly responds to input
+// without breaking the carved look.
+const SIDEBAR_NAV_INACTIVE_CLASS = `${SIDEBAR_NAV_BASE_CLASS} bg-[#18191c] text-slate-200 border-transparent shadow-[inset_2px_2px_5px_rgba(0,0,0,0.7),inset_-2px_-2px_5px_rgba(255,255,255,0.03)] hover:bg-[#1e1f24] hover:text-white hover:border-teal-400/50 hover:shadow-[inset_2px_2px_6px_rgba(0,0,0,0.8),inset_-2px_-2px_5px_rgba(255,255,255,0.05)] hover:translate-x-0.5`;
+// Glowing accent: a white left border + soft matching glow on a teal-700
+// (blue) fill, so the active item stays inside the 5-color palette (no
+// amber/gold) while keeping the same WCAG-AA text contrast as before.
+// Deliberately kept flat/raised (no inset shadow) so the selected item
+// still pops forward off the carved-in inactive rows around it.
+const SIDEBAR_NAV_ACTIVE_CLASS = `${SIDEBAR_NAV_BASE_CLASS} bg-teal-700 text-white border-l-white shadow-[0_0_14px_rgba(255,255,255,0.35)]`;
+// "School Finance" is intentionally NOT part of the tabs/RBAC routing array
+// above — it's a placeholder entry that never actually navigates, so it's
+// kept fully separate from switchTab()'s real routing logic. Shown to
+// Administrator, Bursar, Human Resource, and Director (Teacher access was
+// removed — see FINANCE_ROLES in routes/finance-auth.routes.js; Teachers
+// can no longer set or verify a Finance password, so showing them a nav
+// item that just 403s isn't useful), matching the existing left-aligned
+// style and high-visibility text color.
+//
+// SECURITY NOTE: the popup behind this nav item (showFinancePasswordModal/
+// submitFinancePasswordForm below) asks ONLY for the Finance password —
+// there is deliberately no role selector. The backend already knows the
+// caller's true role from their signed login JWT (req.user.role, set at
+// /api/auth/login and never touched again) and uses that alone to decide
+// what the resulting finance-scoped token can reach (see FINANCE_ROLES in
+// finance-auth.routes.js and EDIT_ROLES in finance.routes.js /
+// payroll.routes.js). A client-side dropdown letting the user assert which
+// role to authenticate as would let a Bursar simply select "Director" and
+// pick up Payroll access that the strict Bursar exclusion (EDIT_ROLES in
+// payroll.routes.js) exists specifically to prevent — so no such control
+// is ever added here, no matter which of these four roles is logged in.
+function renderFinanceNavItem() {
+    if (![ROLES.ADMIN, ROLES.BURSAR, ROLES.HR, ROLES.DIRECTOR].includes(currentUser.role)) return '';
+    return `
+        <button id="nav-finance" onclick="openFinanceGate(); closeMobileSidebar();" class="${SIDEBAR_NAV_INACTIVE_CLASS}">
+            <i class="fa-solid fa-sack-dollar w-4 text-center"></i><span>School Finance</span>
+        </button>
+    `;
+}
+/* ---------------------------------------------------------
+   SCHOOL FINANCE ACCESS GATE
+   -----------------------------------------------------------
+   A second, independent password (verified server-side by
+   FinanceAuthAPI / routes/finance-auth.routes.js — never checked
+   client-side) that gates the "School Finance" nav item. Once the
+   backend confirms it, a short-lived finance token is kept in
+   sessionStorage for the rest of the tab session (see
+   FinanceTokenStore in api.js) so the modal doesn't reappear on
+   every click — only on a fresh tab/session, exactly like the main
+   login token already behaves.
+
+   For now, a verified session still opens the existing "Under
+   Construction" notice (openUnderConstructionNotice) rather than a
+   real dashboard, since there's no Finance data/view built yet —
+   swap that one line for the real panel once it exists.
+   --------------------------------------------------------- */
+function openFinanceGate() {
+    if (FinanceAuthAPI.isUnlocked()) {
+        showFinancePanel();
+        return;
+    }
+    showFinancePasswordModal();
+}
+// Renders the real Finance panel (finance.js) into the same #tab-content
+// switchTab() uses, and mirrors its nav-highlight/title behaviour for the
+// one nav item switchTab() doesn't manage itself — School Finance sits
+// outside the RBAC tabs[] array on purpose (see renderFinanceNavItem's
+// comment above), so it needs this one small equivalent here instead.
+function showFinancePanel() {
+    const contentElem = document.getElementById('tab-content');
+    if (!contentElem) return;
+    currentTabName = 'finance';
+    const titleElem = document.getElementById('page-title');
+    if (titleElem) titleElem.innerText = 'School Finance';
+    const allNavIds = ['dashboard', 'students', 'scores', 'reports', 'analytics', 'performers', 'attendance', 'resources', 'teachers', 'subjectmarksstatus', 'activitylog', 'classsummaries', 'aitoolbox', 'staffmanagement', 'finance'];
+    allNavIds.forEach(id => {
+        const el = document.getElementById(`nav-${id}`);
+        if (el) el.className = id === 'finance' ? SIDEBAR_NAV_ACTIVE_CLASS : SIDEBAR_NAV_INACTIVE_CLASS;
+    });
+    const bannerElem = document.getElementById('welcome-banner');
+    if (bannerElem) bannerElem.classList.remove('visible');
+    // The shared Dashboard-only .metrics-grid (Classes/Students/Subjects/
+    // Marks Recorded — see index.html) lives outside #tab-content, so
+    // replacing contentElem.innerHTML below does NOT remove it. Every
+    // other tab hides it via switchTab()'s updateDashboardStats() call,
+    // but showFinancePanel() is reached through its own path (see
+    // switchTab()'s 'finance' branch above) and skipped that call —
+    // without this, those non-financial counts stayed stuck on screen
+    // above the Finance module whenever Finance was opened straight
+    // from the Dashboard tab. updateDashboardStats() re-checks
+    // currentTabName (already set to 'finance' above) and hides it.
+    updateDashboardStats();
+    // renderFinanceModule()/initFinanceModule() live in the separate
+    // finance.js file — isolated feature module, same pattern as
+    // class-summaries.js / teacher-toolbox.js.
+    contentElem.innerHTML = renderFinanceModule();
+    initFinanceModule();
+}
+async function showFinancePasswordModal() {
+    const root = document.getElementById('modal-root');
+    if (!root) return;
+
+    // Loading state while we ask the backend whether this account has
+    // a Finance password set yet — determines which form to show.
+    root.innerHTML = `
+        <div class="fixed inset-0 bg-slate-900/60 flex items-center justify-center z-50 p-4">
+            <div class="bg-white rounded-2xl shadow-xl w-full max-w-sm p-6 text-center">
+                <i class="fa-solid fa-circle-notch fa-spin text-teal-600 text-xl"></i>
+                <p class="text-xs font-semibold text-slate-500 mt-3">Checking Finance access…</p>
+            </div>
+        </div>
+    `;
+
+    const status = await FinanceAuthAPI.status();
+    if (!status.ok) {
+        root.innerHTML = `
+            <div class="fixed inset-0 bg-slate-900/60 flex items-center justify-center z-50 p-4" onclick="if(event.target===this) closeModal()">
+                <div class="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden">
+                    <div class="p-6 text-center">
+                        <div class="w-14 h-14 mx-auto rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center text-2xl mb-4"><i class="fa-solid fa-triangle-exclamation"></i></div>
+                        <h3 class="text-sm font-black text-slate-900 uppercase tracking-wider">Couldn't Reach Server</h3>
+                        <p class="text-xs font-semibold text-slate-500 mt-2 leading-relaxed">${escapeHTML(status.message)}</p>
+                        <button onclick="closeModal()" class="mt-5 btn-neu-light text-xs font-extrabold uppercase tracking-wider py-2.5 px-6 rounded-xl transition shadow-xs">Close</button>
+                    </div>
+                </div>
+            </div>
+        `;
+        return;
+    }
+
+    renderFinancePasswordForm(status.hasPassword ? 'verify' : 'create');
+}
+function renderFinancePasswordForm(mode) {
+    const root = document.getElementById('modal-root');
+    if (!root) return;
+    const isCreate = mode === 'create';
+    root.innerHTML = `
+        <div class="fixed inset-0 bg-slate-900/60 flex items-center justify-center z-50 p-4" onclick="if(event.target===this) closeModal()">
+            <div class="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden">
+                <div class="p-6">
+                    <div class="w-14 h-14 mx-auto rounded-2xl bg-teal-50 text-teal-600 flex items-center justify-center text-2xl mb-4"><i class="fa-solid fa-lock"></i></div>
+                    <h3 class="text-sm font-black text-slate-900 uppercase tracking-wider text-center">School Finance</h3>
+                    <p class="text-xs font-semibold text-slate-500 mt-2 mb-4 text-center leading-relaxed">
+                        ${isCreate
+                            ? 'This is your first time opening Finance. Set a password to protect it — you\'ll only need it once per browser session.'
+                            : 'Enter your Finance password to continue.'}
+                    </p>
+                    <div id="finance-form-fields" class="space-y-2">
+                        ${isCreate ? `
+                            <input type="password" id="finance-new-password" placeholder="New Finance password (min. 6 characters)" autocomplete="new-password"
+                                class="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700 focus:outline-none focus:ring-1 focus:ring-teal-500">
+                            <input type="password" id="finance-confirm-password" placeholder="Confirm password" autocomplete="new-password"
+                                class="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700 focus:outline-none focus:ring-1 focus:ring-teal-500">
+                        ` : `
+                            <input type="password" id="finance-password-input" placeholder="Finance password" autocomplete="current-password"
+                                class="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700 focus:outline-none focus:ring-1 focus:ring-teal-500">
+                        `}
+                    </div>
+                    <p id="finance-form-error" class="text-rose-600 text-xs font-bold mt-2 hidden"></p>
+                    <div class="flex justify-end gap-2 mt-5">
+                        <button onclick="closeModal()" class="text-xs font-extrabold uppercase tracking-wider text-slate-500 hover:text-slate-700 py-2.5 px-4 rounded-xl transition">Cancel</button>
+                        <button id="finance-submit-btn" onclick="submitFinancePasswordForm('${mode}')" class="btn-neu-light text-xs font-extrabold uppercase tracking-wider py-2.5 px-6 rounded-xl transition shadow-xs">
+                            ${isCreate ? 'Set Password' : 'Unlock'}
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+    const firstInput = document.getElementById(isCreate ? 'finance-new-password' : 'finance-password-input');
+    if (firstInput) {
+        firstInput.focus();
+        root.querySelectorAll('input').forEach(inp => {
+            inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitFinancePasswordForm(mode); });
+        });
+    }
+}
+function showFinanceFormError(message) {
+    const errEl = document.getElementById('finance-form-error');
+    if (!errEl) return;
+    errEl.textContent = message;
+    errEl.classList.remove('hidden');
+}
+async function submitFinancePasswordForm(mode) {
+    const btn = document.getElementById('finance-submit-btn');
+    const errEl = document.getElementById('finance-form-error');
+    if (errEl) errEl.classList.add('hidden');
+
+    if (mode === 'create') {
+        const pw = document.getElementById('finance-new-password').value;
+        const confirm = document.getElementById('finance-confirm-password').value;
+        if (!pw || pw.length < 6) return showFinanceFormError('Password must be at least 6 characters.');
+        if (pw !== confirm) return showFinanceFormError('Passwords do not match.');
+
+        if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+        const result = await FinanceAuthAPI.setPassword(pw);
+        if (!result.ok) {
+            if (btn) { btn.disabled = false; btn.textContent = 'Set Password'; }
+            return showFinanceFormError(result.message);
+        }
+        // Password is set — immediately verify with it so the user isn't
+        // asked to type the same password twice in a row.
+        const verify = await FinanceAuthAPI.verifyPassword(pw);
+        if (!verify.ok) {
+            if (btn) { btn.disabled = false; btn.textContent = 'Set Password'; }
+            return showFinanceFormError(verify.message);
+        }
+        closeModal();
+        showFinancePanel();
+        return;
+    }
+
+    // mode === 'verify'
+    const password = document.getElementById('finance-password-input').value;
+    if (!password) return;
+    if (btn) { btn.disabled = true; btn.textContent = 'Checking…'; }
+    const result = await FinanceAuthAPI.verifyPassword(password);
+    if (!result.ok) {
+        if (btn) { btn.disabled = false; btn.textContent = 'Unlock'; }
+        // Account was reset/never finished setup server-side — drop back
+        // into the "create" form instead of showing a confusing error.
+        if (result.notSet) {
+            renderFinancePasswordForm('create');
+            return;
+        }
+        const input = document.getElementById('finance-password-input');
+        if (input) { input.value = ''; input.focus(); }
+        return showFinanceFormError(result.message);
+    }
+    closeModal();
+    showFinancePanel();
+}
+// Professional "coming soon" modal for placeholder sidebar sections. Reuses
+// the existing #modal-root + closeModal() pattern already used by the
+// Bulk Import and Student Profile modals — no new modal machinery.
+function openUnderConstructionNotice(sectionName) {
+    const root = document.getElementById('modal-root');
+    if (!root) return;
+    root.innerHTML = `
+        <div class="fixed inset-0 bg-slate-900/60 flex items-center justify-center z-50 p-4" onclick="if(event.target===this) closeModal()">
+            <div class="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
+                <div class="p-6 text-center">
+                    <div class="w-14 h-14 mx-auto rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center text-2xl mb-4"><i class="fa-solid fa-person-digging"></i></div>
+                    <h3 class="text-sm font-black text-slate-900 uppercase tracking-wider">${escapeHTML(sectionName)}</h3>
+                    <p class="text-xs font-semibold text-slate-500 mt-2 leading-relaxed">This section is currently under construction by the Tech Engineer and will be available soon. Thank you for your patience.</p>
+                    <button onclick="closeModal()" class="mt-5 btn-neu-light text-xs font-extrabold uppercase tracking-wider py-2.5 px-6 rounded-xl transition shadow-xs">Got It</button>
+                </div>
+            </div>
+        </div>
+    `;
+}
+let currentTabName = null; // tracks whatever switchTab() last rendered, so refreshCurrentTabView() (e.g. after a term switch) knows what to re-render
+function switchTab(tabName) {
+    // "finance" is intentionally NOT part of any role's permissions.tabs
+    // (see renderFinanceNavItem's comment) — it's routed through
+    // showFinancePanel()/openFinanceGate() instead. But refreshCurrentTabView()
+    // calls switchTab(currentTabName) generically (e.g. after a term switch),
+    // and currentTabName is 'finance' while the Finance panel is open. Without
+    // this branch, the RBAC check below would treat 'finance' as an
+    // unrecognized/unauthorized tab and silently bounce back to the dashboard
+    // every time that happens. Re-enter through showFinancePanel() instead so
+    // the finance-scoped session/token stays intact and the panel just re-renders.
+    if (tabName === 'finance') {
+        if (typeof FinanceAuthAPI !== 'undefined' && FinanceAuthAPI.isUnlocked()) {
+            showFinancePanel();
+        } else {
+            openFinanceGate();
+        }
+        return;
+    }
+    // RBAC gate: never render a tab this role isn't permitted to access,
+    // even if switchTab() is called directly (e.g. from the console).
+    const permissions = getPermissions(currentUser.role);
+    if (!permissions.tabs.includes(tabName)) {
+        tabName = permissions.defaultTab;
+    }
+    currentTabName = tabName;
+    // Welcome banner and summary metric cards are Dashboard-only —
+    // hide them on every other tab (Scores, Students, etc.) instead of
+    // leaving them visible across the whole portal.
+    const bannerElem = document.getElementById('welcome-banner');
+    if (bannerElem) bannerElem.classList.toggle('visible', tabName === 'dashboard');
+    const tabs = ['dashboard', 'students', 'scores', 'reports', 'analytics', 'performers', 'attendance', 'resources', 'teachers', 'subjectmarksstatus', 'activitylog', 'classsummaries', 'aitoolbox', 'staffmanagement'];
+    tabs.forEach(tab => {
+        const navItem = document.getElementById(`nav-${tab}`);
+        if (!navItem) return;
+        if (tab === tabName) {
+            // teal-700 (not teal-600) is used here specifically so white nav
+            // text clears the 4.5:1 WCAG AA contrast ratio against the fill.
+            // flex + w-full + text-left keep this left-aligned like the
+            // unselected state below — without them, the browser's default
+            // centered button text styling was applying only to the active
+            // item. SIDEBAR_NAV_ACTIVE_CLASS adds the glowing gold left-border
+            // accent that marks the current page (renderSidebarNav above).
+            navItem.className = SIDEBAR_NAV_ACTIVE_CLASS;
+        } else {
+            navItem.className = SIDEBAR_NAV_INACTIVE_CLASS;
+        }
+    });
+    const titleElem = document.getElementById('page-title');
+    let titleText = "";
+    switch (tabName) {
+        case 'dashboard': titleText = "Dashboard"; break;
+        case 'students': titleText = "Student Records Management"; break;
+        case 'scores': titleText = "Academic Score Sheets"; break;
+        case 'reports': titleText = "Report Cards & Transcripts"; break;
+        case 'analytics': titleText = "Learner Performance Analytics"; break;
+        case 'performers': titleText = "Best & Worst Performers"; break;
+        case 'attendance': titleText = "Attendance Registry"; break;
+        case 'resources': titleText = "Educational Resources"; break;
+        case 'teachers': titleText = currentUser.role === 'Teacher' ? "My Teacher Profile" : "Teacher Accounts & Credentials"; break;
+        case 'subjectmarksstatus': titleText = "Subject Marks Status"; break;
+        case 'activitylog': titleText = "Admin Activity Log"; break;
+        case 'classsummaries': titleText = "Class Score Summaries"; break;
+        case 'aitoolbox': titleText = "Teacher Toolbox"; break;
+        case 'staffmanagement': titleText = "Staff Management (Bursar / HR / Director)"; break;
+    }
+    if (titleElem) titleElem.innerText = titleText;
+    const contentElem = document.getElementById('tab-content');
+    if (!contentElem) return;
+    
+    if (performanceChartInstance) {
+        performanceChartInstance.destroy();
+        performanceChartInstance = null;
+    }
+    if (gradeDistributionChartInstance) {
+        gradeDistributionChartInstance.destroy();
+        gradeDistributionChartInstance = null;
+    }
+    if (dashboardClassChartInstance) {
+        dashboardClassChartInstance.destroy();
+        dashboardClassChartInstance = null;
+    }
+    if (myPerformanceTrendChartInstance) {
+        myPerformanceTrendChartInstance.destroy();
+        myPerformanceTrendChartInstance = null;
+    }
+    switch (tabName) {
+        case 'dashboard':
+            contentElem.innerHTML = renderDashboardModule();
+            if (currentUser.role === ROLES.STUDENT) {
+                initOwnDashboardModule();
+            } else {
+                initDashboardModule();
+            }
+            break;
+        case 'students':
+            contentElem.innerHTML = renderStudentsModule();
+            loadStudentData();
+            break;
+        case 'scores':
+            contentElem.innerHTML = renderScoresModule();
+            updateSubjectDropdown();
+            break;
+        case 'reports':
+            contentElem.innerHTML = renderReportsModule();
+            break;
+        case 'analytics':
+            contentElem.innerHTML = renderAnalyticsModule();
+            initPerformanceChart();
+            break;
+        case 'performers':
+            contentElem.innerHTML = renderPerformersModule();
+            renderPerformersContent();
+            break;
+        case 'attendance':
+            contentElem.innerHTML = renderAttendanceModule();
+            loadAttendanceData();
+            break;
+        case 'resources':
+            contentElem.innerHTML = renderResourcesModule();
+            loadResourcesData();
+            break;
+        case 'teachers':
+            contentElem.innerHTML = renderTeachersModule();
+            loadTeacherData();
+            break;
+        case 'subjectmarksstatus':
+            contentElem.innerHTML = renderSubjectMarksStatusModule();
+            loadSubjectMarksStatusData();
+            break;
+        case 'activitylog':
+            contentElem.innerHTML = renderActivityLogModule();
+            loadActivityLogData();
+            break;
+        case 'classsummaries':
+            // renderClassSummariesModule/initClassSummariesModule live in the
+            // separate class-summaries.js file — isolated feature module.
+            contentElem.innerHTML = renderClassSummariesModule();
+            initClassSummariesModule();
+            break;
+        case 'aitoolbox':
+            // renderTeacherToolboxModule/initTeacherToolboxModule live in the
+            // separate teacher-toolbox.js file — isolated feature module.
+            contentElem.innerHTML = renderTeacherToolboxModule();
+            initTeacherToolboxModule();
+            break;
+        case 'staffmanagement':
+            // renderStaffManagementModule/initStaffManagementModule live in
+            // the separate staff-management.js file — isolated feature
+            // module, same pattern as class-summaries.js / teacher-toolbox.js.
+            contentElem.innerHTML = renderStaffManagementModule();
+            initStaffManagementModule();
+            break;
+    }
+    updateDashboardStats();
+}
+// Re-renders whatever tab is currently on screen without changing
+// navigation state — used after switching the viewed term so the visible
+// screen immediately reflects the newly loaded term/year data instead of
+// requiring the user to click away and back.
+function refreshCurrentTabView() {
+    if (currentTabName) switchTab(currentTabName);
+}
+/* ---------------------------------------------------------
+   3. DASHBOARD STATISTICS CALCULATION
+   --------------------------------------------------------- */
+// A record being `touched` only means a teacher opened/edited that
+// subject at some point — it stays true even after every individual
+// score field on it has since been cleared or deleted. "Marks Recorded"
+// must only count records that still hold at least one real score value,
+// so this checks the actual score fields instead of the touched flag.
+function hasRecordedScore(marks) {
+    return ['ao1', 'ao2', 'eot', 'p1', 'p2'].some(
+        field => marks[field] !== null && marks[field] !== undefined && marks[field] !== ''
+    );
+}
+function updateDashboardStats() {
+    const metricsGrid = document.querySelector('.metrics-grid');
+    if (metricsGrid) {
+        // School-wide counts are administrative overview data — not part of
+        // a Student's restricted, self-only view. Also Dashboard-only: this
+        // function runs after nearly every data change regardless of which
+        // tab is on screen, so it must re-check the active tab each time
+        // rather than just role, or the grid would reappear on other tabs.
+        metricsGrid.classList.toggle('hidden', currentUser.role === 'Student' || currentTabName !== 'dashboard');
+    }
+    const totalStudents = studentsList.length;
+    const uniqueClasses = [...new Set(studentsList.map(s => s.class))].length;
+    const totalMarksRecorded = Object.values(marksStorage).filter(m => m && hasRecordedScore(m)).length;
+    const totalSubjects = oLevelSubjects.length + aLevelSubjects.length;
+    
+    const elStudents = document.getElementById('stat-students-count');
+    const elClasses = document.getElementById('stat-classes-count');
+    const elSubjects = document.getElementById('stat-subjects-count');
+    const elMarks = document.getElementById('stat-marks-count');
+    
+    if (elStudents) elStudents.innerText = totalStudents;
+    if (elClasses) elClasses.innerText = uniqueClasses;
+    if (elSubjects) elSubjects.innerText = totalSubjects;
+    if (elMarks) elMarks.innerText = totalMarksRecorded;
+}
+/* ---------------------------------------------------------
+   3b. COMPREHENSIVE DASHBOARD OVERVIEW MODULE
+   A new, additive "Dashboard" tab. Reuses existing, already-tested
+   calculations only (computePerformersData, computeAnalyticsData,
+   studentsList/marksStorage counts) — it introduces no new grading,
+   scoring, or storage logic beyond the client-side notice board
+   above. Does not touch any other module's rendering or state.
+   --------------------------------------------------------- */
+function computeDashboardSummary() {
+    const totalStudents = studentsList.length;
+    const boys = studentsList.filter(s => s.gender === 'Male').length;
+    const girls = studentsList.filter(s => s.gender === 'Female').length;
+    const uniqueClasses = [...new Set(studentsList.map(s => s.class))].length;
+    const totalSubjects = oLevelSubjects.length + aLevelSubjects.length;
+    const totalMarksRecorded = Object.values(marksStorage).filter(m => m && hasRecordedScore(m)).length;
+    return { totalStudents, boys, girls, uniqueClasses, totalSubjects, totalMarksRecorded };
+}
+// Combines the O-Level and A-Level performer lists (same criteria and
+// underlying scores as the full Best & Worst Performers tab) into one
+// short, level-tagged preview capped at maxRows per side.
+function computeDashboardPerformersPreview(maxRows) {
+    const oLevel = computePerformersData('O-Level');
+    const aLevel = computePerformersData('A-Level');
+    const tag = (rows, level) => rows.map(r => ({ ...r, level }));
+    const best = [...tag(oLevel.best, 'O-Level'), ...tag(aLevel.best, 'A-Level')].slice(0, maxRows);
+    const worst = [...tag(oLevel.worst, 'O-Level'), ...tag(aLevel.worst, 'A-Level')].slice(0, maxRows);
+    return { best, worst };
+}
+function renderDashboardModule() {
+    // A Student's Dashboard tab is their own personal summary (attendance,
+    // absences, subjects recorded, performance summary, system summary) —
+    // never the school-wide overview below, which is Administrator/Teacher
+    // only. Mirrors the same role branch already used by renderReportsModule.
+    if (currentUser.role === ROLES.STUDENT) return renderOwnDashboardModule();
+    const s = computeDashboardSummary();
+    const { best, worst } = computeDashboardPerformersPreview(5);
+    const canManageStudents = getPermissions(currentUser.role).canManageStudents;
+    const canManageNotices = getPermissions(currentUser.role).canManageNotices;
+
+    const previewRow = (r) => `
+        <tr class="hover:bg-slate-50 transition">
+            <td class="p-3 font-bold text-slate-900">${escapeHTML(r.student.name)}</td>
+            <td class="p-3"><span class="bg-teal-50 text-teal-800 font-extrabold px-2 py-0.5 rounded-lg text-[10px] border border-teal-200">${escapeHTML(r.student.class)}</span></td>
+            <td class="p-3 text-slate-500 font-semibold text-[11px]">${r.level}</td>
+            <td class="p-3 text-center font-black text-slate-900">${r.level === 'A-Level' ? r.score : r.score.toFixed(1)}</td>
+        </tr>`;
+    const bestBody = best.length > 0 ? best.map(previewRow).join('') : `<tr><td colspan="4" class="p-6 text-center text-slate-400 text-xs font-medium uppercase tracking-wider">No top performers yet.</td></tr>`;
+    const worstBody = worst.length > 0 ? worst.map(previewRow).join('') : `<tr><td colspan="4" class="p-6 text-center text-slate-400 text-xs font-medium uppercase tracking-wider">No at-risk learners yet.</td></tr>`;
+
+    return `
+        <div class="space-y-6">
+            <!-- Summary Metric Cards -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div class="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs">
+                    <div class="flex items-center justify-between">
+                        <span class="text-[10px] font-extrabold text-blue-700 uppercase tracking-wider">Active Enrollment</span>
+                        <div class="w-9 h-9 rounded-xl bg-teal-50 text-teal-600 flex items-center justify-center text-sm"><i class="fa-solid fa-user-graduate"></i></div>
+                    </div>
+                    <p class="text-2xl font-black text-slate-900 mt-2">${s.totalStudents}</p>
+                    <p class="text-[11px] font-bold text-slate-500 mt-1"><i class="fa-solid fa-mars text-blue-500 mr-1"></i>${s.boys} Boys &nbsp;&bull;&nbsp; <i class="fa-solid fa-venus text-rose-500 mr-1"></i>${s.girls} Girls</p>
+                </div>
+                <div class="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs">
+                    <div class="flex items-center justify-between">
+                        <span class="text-[10px] font-extrabold text-blue-700 uppercase tracking-wider">Total Classes</span>
+                        <div class="w-9 h-9 rounded-xl bg-teal-50 text-teal-600 flex items-center justify-center text-sm"><i class="fa-solid fa-school"></i></div>
+                    </div>
+                    <p class="text-2xl font-black text-slate-900 mt-2">${s.uniqueClasses}</p>
+                    <p class="text-[11px] font-bold text-slate-500 mt-1">S.1 &ndash; S.6</p>
+                </div>
+                <div class="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs">
+                    <div class="flex items-center justify-between">
+                        <span class="text-[10px] font-extrabold text-blue-700 uppercase tracking-wider">Total Subjects</span>
+                        <div class="w-9 h-9 rounded-xl bg-teal-50 text-teal-600 flex items-center justify-center text-sm"><i class="fa-solid fa-book"></i></div>
+                    </div>
+                    <p class="text-2xl font-black text-slate-900 mt-2">${s.totalSubjects}</p>
+                    <p class="text-[11px] font-bold text-slate-500 mt-1">O-Level &amp; A-Level combined</p>
+                </div>
+                <div class="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs">
+                    <div class="flex items-center justify-between">
+                        <span class="text-[10px] font-extrabold text-blue-700 uppercase tracking-wider">Marks Recorded</span>
+                        <div class="w-9 h-9 rounded-xl bg-teal-50 text-teal-600 flex items-center justify-center text-sm"><i class="fa-solid fa-pen-to-square"></i></div>
+                    </div>
+                    <p class="text-2xl font-black text-slate-900 mt-2">${s.totalMarksRecorded}</p>
+                    <p class="text-[11px] font-bold text-slate-500 mt-1">Across all subjects &amp; classes</p>
+                </div>
+            </div>
+
+            <!-- Quick Action Toolbar -->
+            <div class="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                <div>
+                    <h3 class="text-sm font-black text-slate-900 uppercase"><i class="fa-solid fa-bolt mr-2 text-teal-600"></i>Quick Actions</h3>
+                    <p class="text-xs font-semibold text-slate-500 mt-0.5">Common tasks, one click away.</p>
+                </div>
+                ${canManageStudents ? `
+                <div class="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
+                    <button onclick="openBulkImportModal()" class="w-full sm:w-auto btn-neu-light text-xs font-extrabold uppercase tracking-wider py-2.5 px-4 rounded-xl transition">
+                        <i class="fa-solid fa-file-csv mr-2"></i>Bulk Import (CSV)
+                    </button>
+                    <button onclick="goToAddStudentForm()" class="w-full sm:w-auto btn-neu-light text-xs font-extrabold uppercase tracking-wider py-2.5 px-4 rounded-xl transition">
+                        <i class="fa-solid fa-user-plus mr-2"></i>Add New Student
+                    </button>
+                </div>` : `
+                <span class="text-[11px] font-extrabold text-slate-400 uppercase tracking-wider bg-slate-100 px-3 py-2 rounded-lg">View Only</span>`}
+            </div>
+
+            <!-- Academic Performance Highlights -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div class="bg-white border border-slate-200 rounded-2xl shadow-xs overflow-hidden">
+                    <div class="p-5 border-b border-slate-200 flex items-center justify-between gap-3">
+                        <div class="flex items-center gap-3">
+                            <div class="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center text-base flex-shrink-0"><i class="fa-solid fa-trophy"></i></div>
+                            <div>
+                                <h4 class="text-xs font-black text-slate-900 uppercase tracking-wider">Top Performers</h4>
+                                <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider">O-Level 2.5&ndash;3.0 &bull; A-Level 14+ pts</p>
+                            </div>
+                        </div>
+                        <button onclick="switchTab('performers')" class="text-[10px] font-extrabold uppercase tracking-wider text-teal-700 hover:text-teal-800 whitespace-nowrap">View All <i class="fa-solid fa-arrow-right ml-1"></i></button>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse">
+                            <thead><tr class="bg-slate-50 text-slate-500 uppercase text-[10px] font-extrabold tracking-wider border-b border-slate-200">
+                                <th class="p-3">Name</th><th class="p-3">Class</th><th class="p-3">Level</th><th class="p-3 text-center">Score</th>
+                            </tr></thead>
+                            <tbody class="divide-y divide-slate-100 text-xs text-slate-700">${bestBody}</tbody>
+                        </table>
+                    </div>
+                </div>
+                <div class="bg-white border border-slate-200 rounded-2xl shadow-xs overflow-hidden">
+                    <div class="p-5 border-b border-slate-200 flex items-center justify-between gap-3">
+                        <div class="flex items-center gap-3">
+                            <div class="w-10 h-10 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center text-base flex-shrink-0"><i class="fa-solid fa-triangle-exclamation"></i></div>
+                            <div>
+                                <h4 class="text-xs font-black text-slate-900 uppercase tracking-wider">At-Risk Students</h4>
+                                <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider">O-Level &le;1.4 &bull; A-Level &le;4 pts</p>
+                            </div>
+                        </div>
+                        <button onclick="switchTab('performers')" class="text-[10px] font-extrabold uppercase tracking-wider text-teal-700 hover:text-teal-800 whitespace-nowrap">View All <i class="fa-solid fa-arrow-right ml-1"></i></button>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse">
+                            <thead><tr class="bg-slate-50 text-slate-500 uppercase text-[10px] font-extrabold tracking-wider border-b border-slate-200">
+                                <th class="p-3">Name</th><th class="p-3">Class</th><th class="p-3">Level</th><th class="p-3 text-center">Score</th>
+                            </tr></thead>
+                            <tbody class="divide-y divide-slate-100 text-xs text-slate-700">${worstBody}</tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Visual Analytics: Class-by-Class Performance Comparison -->
+            <div class="bg-white border border-slate-200 p-6 rounded-2xl shadow-xs">
+                <h4 class="text-[11px] font-extrabold text-slate-500 uppercase tracking-wider mb-3"><i class="fa-solid fa-chart-column mr-2 text-teal-600"></i>Class-by-Class Performance Comparison</h4>
+                <div class="relative h-80">
+                    <canvas id="dashboardClassChart"></canvas>
+                </div>
+            </div>
+
+            <!-- Digital Notice Board -->
+            <div class="bg-white border border-slate-200 rounded-2xl shadow-xs overflow-hidden">
+                <div class="p-5 border-b border-slate-200 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                    <div>
+                        <h3 class="text-sm font-black text-slate-900 uppercase"><i class="fa-solid fa-bullhorn mr-2 text-teal-600"></i>Administrative Notice Board</h3>
+                        <p class="text-xs font-semibold text-slate-500 mt-0.5">Staff announcements and school bulletin.</p>
+                    </div>
+                    ${canManageNotices ? `
+                    <button onclick="toggleNoticeForm()" class="btn-neu-light text-xs font-extrabold uppercase tracking-wider py-2.5 px-4 rounded-xl transition shadow-xs">
+                        <i class="fa-solid fa-plus mr-2"></i>Post Notice
+                    </button>` : ''}
+                </div>
+                ${canManageNotices ? `
+                <div id="notice-form-container" class="hidden p-5 border-b border-slate-200 bg-slate-50">
+                    <form onsubmit="handleAddNotice(event)" class="space-y-3">
+                        <div>
+                            <label class="block text-[11px] font-extrabold text-slate-500 uppercase mb-1">Title</label>
+                            <input type="text" id="notice-title" placeholder="e.g. Staff Meeting Reminder" required class="w-full p-2.5 bg-white border border-slate-300 rounded-xl text-xs font-semibold text-slate-700">
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-extrabold text-slate-500 uppercase mb-1">Message</label>
+                            <textarea id="notice-message" rows="3" placeholder="Announcement details..." required class="w-full p-2.5 bg-white border border-slate-300 rounded-xl text-xs font-semibold text-slate-700"></textarea>
+                        </div>
+                        <div class="flex justify-end gap-2">
+                            <button type="button" onclick="toggleNoticeForm()" class="bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-extrabold uppercase py-2 px-4 rounded-xl"><i class="fa-solid fa-xmark mr-1.5"></i>Cancel</button>
+                            <button type="submit" class="btn-neu-light text-xs font-extrabold uppercase py-2 px-4 rounded-xl transition"><i class="fa-solid fa-floppy-disk mr-1.5"></i>Post</button>
+                        </div>
+                    </form>
+                </div>` : ''}
+                <div id="notice-board-list" class="divide-y divide-slate-100"></div>
+            </div>
+        </div>
+    `;
+}
+function renderNoticeBoardList() {
+    const container = document.getElementById('notice-board-list');
+    if (!container) return;
+    const canManageNotices = getPermissions(currentUser.role).canManageNotices;
+    if (noticesList.length === 0) {
+        container.innerHTML = `<p class="p-8 text-center text-slate-400 text-xs font-medium uppercase tracking-wider">No notices posted yet.</p>`;
+        return;
+    }
+    const sorted = [...noticesList].sort((a, b) => b.id - a.id);
+    container.innerHTML = sorted.map(n => `
+        <div class="p-5 flex justify-between items-start gap-4">
+            <div class="min-w-0">
+                <div class="flex items-center gap-2 flex-wrap">
+                    <h5 class="text-xs font-black text-slate-900">${escapeHTML(n.title)}</h5>
+                    <span class="text-[10px] font-bold text-slate-400">${escapeHTML(n.date)}</span>
+                </div>
+                <p class="text-xs text-slate-600 font-medium mt-1.5 leading-relaxed">${escapeHTML(n.message)}</p>
+                <p class="text-[10px] font-extrabold text-teal-700 uppercase tracking-wider mt-2">&mdash; ${escapeHTML(n.author)}</p>
+            </div>
+            ${canManageNotices ? `<button onclick="deleteNotice(${n.id})" class="text-rose-600 hover:text-rose-700 text-[11px] font-extrabold uppercase tracking-wider btn-neu-light-danger px-3 py-1.5 rounded-lg transition-colors flex-shrink-0"><i class="fa-solid fa-trash mr-1"></i>Delete</button>` : ''}
+        </div>
+    `).join('');
+}
+function toggleNoticeForm() {
+    if (!getPermissions(currentUser.role).canManageNotices) return; // RBAC guard
+    const formContainer = document.getElementById('notice-form-container');
+    if (formContainer) formContainer.classList.toggle('hidden');
+}
+async function handleAddNotice(event) {
+    event.preventDefault();
+    if (!getPermissions(currentUser.role).canManageNotices) return; // RBAC guard
+    const title = getInputValue('notice-title').trim();
+    const message = getInputValue('notice-message').trim();
+    if (!title || !message) return;
+    const submitBtn = event.target.querySelector('button[type="submit"]');
+    if (submitBtn) submitBtn.disabled = true;
+    try {
+        await NoticesAPI.create({
+            title, message,
+            author: currentUser.name || currentUser.username,
+            date: new Date().toISOString().slice(0, 10)
+        });
+    } catch (err) {
+        alert(err.message || 'Could not post the notice. Please try again.');
+        if (submitBtn) submitBtn.disabled = false;
+        return;
+    }
+    // Only reflect the new notice in the UI once the backend has confirmed
+    // it was saved — re-pull the authoritative list rather than guessing
+    // at its shape/id locally.
+    await refreshNoticesList();
+    if (submitBtn) submitBtn.disabled = false;
+    const titleEl = document.getElementById('notice-title');
+    const messageEl = document.getElementById('notice-message');
+    if (titleEl) titleEl.value = '';
+    if (messageEl) messageEl.value = '';
+    toggleNoticeForm();
+    renderNoticeBoardList();
+}
+async function deleteNotice(id) {
+    if (!getPermissions(currentUser.role).canManageNotices) return; // RBAC guard
+    if (!confirm('Delete this notice? This cannot be undone.')) return;
+    try {
+        // Sends an explicit DELETE request to remove the notice from the
+        // database directly (see NoticesAPI.remove in api.js).
+        await NoticesAPI.remove(id);
+    } catch (err) {
+        alert(err.message || 'Could not delete this notice. Please try again.');
+        return;
+    }
+    // Local state only updates after the backend confirms the delete, so
+    // the notice stays gone permanently instead of reappearing on reload.
+    await refreshNoticesList();
+    renderNoticeBoardList();
+}
+// Quick-action shortcut: jumps to the Students tab and opens the same
+// "Add New Student" form used there — no duplicate form/logic is created.
+function goToAddStudentForm() {
+    switchTab('students');
+    setTimeout(() => {
+        const formContainer = document.getElementById('student-form-container');
+        if (formContainer) formContainer.classList.remove('hidden');
+    }, 0);
+}
+function initDashboardModule() {
+    renderNoticeBoardList();
+    const analytics = computeAnalyticsData();
+    const ctx = document.getElementById('dashboardClassChart');
+    if (!ctx) return;
+    if (dashboardClassChartInstance) {
+        dashboardClassChartInstance.destroy();
+    }
+    dashboardClassChartInstance = new Chart(ctx, {
+        type: 'bar',
+        data: {
+            labels: ANALYTICS_CLASS_LEVELS,
+            datasets: [{
+                label: 'Class Mean Score (%)',
+                data: ANALYTICS_CLASS_LEVELS.map(level => analytics.classAverages[level]),
+                backgroundColor: 'rgba(37, 99, 235, 0.8)',
+                borderColor: 'rgba(29, 78, 216, 1)',
+                borderWidth: 1,
+                borderRadius: 8
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+                legend: { labels: { font: { weight: 'bold', size: 11 } } }
+            },
+            scales: {
+                y: { beginAtZero: true, max: 100, ticks: { font: { weight: 'bold' } } },
+                x: { ticks: { font: { weight: 'bold' } } }
+            }
+        }
+    });
+}
+/* ---------------------------------------------------------
+   4. STUDENT RECORDS MODULE (Light Theme)
+   --------------------------------------------------------- */
+function renderStudentsModule() {
+    const canManage = getPermissions(currentUser.role).canManageStudents;
+    return `
+        <div class="space-y-6">
+            <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white border border-slate-200 p-5 rounded-2xl shadow-xs">
+                <div class="w-full md:w-auto">
+                    <label class="block text-[11px] font-extrabold text-slate-500 uppercase tracking-wider mb-1">Filter by Class</label>
+                    <select id="class-filter" onchange="studentTablePage = 1; loadStudentData();" class="w-full md:w-64 p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-teal-500">
+                        <option value="ALL">All Classes (S.1 - S.6)</option>
+                        <option value="S.1">S.1</option>
+                        <option value="S.2">S.2</option>
+                        <option value="S.3">S.3</option>
+                        <option value="S.4">S.4</option>
+                        <option value="S.5">S.5</option>
+                        <option value="S.6">S.6</option>
+                    </select>
+                    <div class="mt-3">
+                        <label class="block text-[11px] font-extrabold text-slate-500 uppercase tracking-wider mb-1">Search Students</label>
+                        <div class="relative w-full md:w-64">
+                            <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[11px] pointer-events-none"></i>
+                            <input type="text" id="student-search" oninput="debouncedStudentSearch()" placeholder="Search by ID or name..." autocomplete="off" class="w-full p-2.5 pl-8 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-teal-500">
+                        </div>
+                    </div>
+                </div>
+                ${canManage ? `
+                <div class="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
+                    <button onclick="openBulkImportModal()" class="w-full sm:w-auto btn-neu-light text-xs font-extrabold uppercase tracking-wider py-2.5 px-4 rounded-xl transition">
+                        <i class="fa-solid fa-file-csv mr-2"></i>Bulk Import (CSV)
+                    </button>
+                    <button onclick="toggleStudentForm()" class="w-full sm:w-auto btn-neu-light text-xs font-extrabold uppercase tracking-wider py-2.5 px-4 rounded-xl transition">
+                        <i class="fa-solid fa-user-plus mr-2"></i>Add New Student
+                    </button>
+                </div>` : `
+                <span class="text-[11px] font-extrabold text-slate-400 uppercase tracking-wider bg-slate-100 px-3 py-2 rounded-lg">View Only</span>`}
+            </div>
+            ${canManage ? `
+            <div id="student-form-container" class="hidden bg-white border border-slate-200 p-5 rounded-2xl shadow-xs transition-all duration-300 ease-in-out">
+                <h4 class="text-xs font-extrabold text-teal-700 uppercase tracking-wider mb-3"><i class="fa-solid fa-user-plus mr-2"></i>Register New Student</h4>
+                <form onsubmit="handleAddStudent(event)" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+                    <div>
+                        <label class="block text-[11px] font-extrabold text-slate-500 uppercase mb-1">Student ID</label>
+                        <input type="text" id="stud-id" placeholder="e.g. KSS/005" required class="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-extrabold text-slate-500 uppercase mb-1">Full Name</label>
+                        <input type="text" id="stud-name" placeholder="Full name" required class="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-extrabold text-slate-500 uppercase mb-1">Class Level</label>
+                        <select id="stud-class" class="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-700">
+                            <option value="S.1">S.1</option>
+                            <option value="S.2">S.2</option>
+                            <option value="S.3">S.3</option>
+                            <option value="S.4">S.4</option>
+                            <option value="S.5">S.5</option>
+                            <option value="S.6">S.6</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-extrabold text-slate-500 uppercase mb-1">Gender</label>
+                        <select id="stud-gender" class="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-700">
+                            <option value="Male">Male</option>
+                            <option value="Female">Female</option>
+                        </select>
+                    </div>
+                    <div class="sm:col-span-2 md:col-span-4 flex justify-end space-x-2 pt-2">
+                        <button type="button" onclick="toggleStudentForm()" class="bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-extrabold uppercase py-2 px-4 rounded-xl"><i class="fa-solid fa-xmark mr-1.5"></i>Cancel</button>
+                        <button type="submit" class="btn-neu-light text-xs font-extrabold uppercase py-2 px-4 rounded-xl transition"><i class="fa-solid fa-floppy-disk mr-1.5"></i>Save Student</button>
+                    </div>
+                </form>
+            </div>` : ''}
+            <div class="overflow-x-auto bg-white border border-slate-200 rounded-2xl shadow-xs">
+                <table class="w-full text-left border-collapse">
+                    <thead>
+                        <tr class="bg-slate-50 text-slate-500 uppercase text-[10px] font-extrabold tracking-wider border-b border-slate-200">
+                            <th class="p-4">Student ID</th>
+                            <th class="p-4">Full Name</th>
+                            <th class="p-4">Class</th>
+                            <th class="p-4">Gender</th>
+                            <th class="p-4 text-center">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="student-table-body" class="divide-y divide-slate-100 text-xs text-slate-700"></tbody>
+                    </table>
+                </div>
+                <div id="student-table-pagination" class="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 py-3 border-t border-slate-100"></div>
+            </div>
+        </div>
+    `;
+}
+// Debounced so a keystroke in #student-search waits 350ms of no further
+// typing before it actually hits the server -- see debounce() in api.js.
+const debouncedStudentSearch = debounce(() => {
+    studentTablePage = 1; // a new search always starts back at page 1
+    loadStudentData();
+}, 350);
+
+async function loadStudentData() {
+    const tbody = document.getElementById('student-table-body');
+    const pagination = document.getElementById('student-table-pagination');
+    const filterSelect = document.getElementById('class-filter');
+    const searchInput = document.getElementById('student-search');
+    if (!tbody) return;
+    const canManage = getPermissions(currentUser.role).canManageStudents;
+    const selectedClass = filterSelect ? filterSelect.value : 'ALL';
+    const searchTerm = searchInput ? searchInput.value.trim() : '';
+
+    tbody.innerHTML = `<tr><td colspan="5" class="p-6 text-center text-slate-400 text-xs font-medium"><i class="fa-solid fa-circle-notch fa-spin mr-2"></i>Loading students&hellip;</td></tr>`;
+
+    let result;
+    try {
+        result = await StudentsAPI.list({
+            class: selectedClass,
+            search: searchTerm || undefined,
+            page: studentTablePage,
+            pageSize: STUDENT_TABLE_PAGE_SIZE
+        });
+    } catch (err) {
+        tbody.innerHTML = `<tr><td colspan="5" class="p-6 text-center text-rose-500 text-xs font-semibold">${escapeHTML(err.message || "Couldn't load students.")}</td></tr>`;
+        if (pagination) pagination.innerHTML = '';
+        return;
+    }
+
+    // The paginated shape is { data, total, page, pageSize, totalPages }.
+    // A plain array only happens if something upstream (e.g. the local
+    // fallback with no `page`) returned the old unpaginated form -- guard
+    // for it defensively rather than assuming the envelope is always there.
+    const pageStudents = Array.isArray(result) ? result : (result.data || []);
+    studentTableTotal = Array.isArray(result) ? pageStudents.length : (result.total || 0);
+    studentTableTotalPages = Array.isArray(result) ? 1 : (result.totalPages || 1);
+
+    updateDashboardStats();
+
+    if (pageStudents.length === 0) {
+        const contextMsg = searchTerm
+            ? `No student records match "${escapeHTML(searchTerm)}"${selectedClass !== 'ALL' ? ` in ${selectedClass}` : ''}.`
+            : `No student records found for ${selectedClass}.`;
+        tbody.innerHTML = `<tr><td colspan="5" class="p-6 text-center text-slate-400 text-xs font-medium">${contextMsg}</td></tr>`;
+        if (pagination) pagination.innerHTML = '';
+        return;
+    }
+
+    // Build every row as a string first and write the table once. Using
+    // `tbody.innerHTML += rowHtml` inside the loop (the old code) forces the
+    // browser to re-parse and re-render the *entire* accumulated table on
+    // every single iteration. With server-side pagination this only ever
+    // has to render one page's worth of rows at a time anyway.
+    const rowsHtml = pageStudents.map((student) => `
+            <tr class="hover:bg-slate-50 transition-colors">
+                <td class="p-4 font-mono text-xs font-bold text-teal-700">${student.id}</td>
+                <td class="p-4 font-bold text-slate-900">${escapeHTML(student.name)}</td>
+                <td class="p-4"><span class="bg-teal-50 text-teal-800 font-extrabold px-2.5 py-1 rounded-lg text-[11px] border border-teal-200">${escapeHTML(student.class)}</span></td>
+                <td class="p-4 text-slate-600 font-semibold">${escapeHTML(student.gender)}</td>
+                <td class="p-4 text-center space-x-2 whitespace-nowrap">
+                    <button onclick="openStudentProfileModal('${student.id}')" class="text-teal-700 hover:text-teal-800 text-[11px] font-extrabold uppercase tracking-wider bg-teal-50 hover:bg-teal-100 px-3 py-1.5 rounded-lg border border-teal-200 transition-colors"><i class="fa-solid fa-id-card mr-1"></i>View</button>
+                    ${canManage ? `<button onclick="openEditStudentModal('${student.id}')" class="text-blue-600 hover:text-blue-700 text-[11px] font-extrabold uppercase tracking-wider bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg border border-blue-200 transition-colors"><i class="fa-solid fa-pen mr-1"></i>Edit</button>` : ''}
+                    ${canManage ? `<button onclick="deleteStudent('${student.id}')" class="text-rose-600 hover:text-rose-700 text-[11px] font-extrabold uppercase tracking-wider btn-neu-light-danger px-3 py-1.5 rounded-lg transition-colors"><i class="fa-solid fa-trash mr-1"></i>Delete</button>` : ''}
+                </td>
+            </tr>
+        `).join('');
+    tbody.innerHTML = rowsHtml;
+
+    if (pagination) pagination.innerHTML = renderStudentTablePagination();
+}
+// Prev/Next + "Showing A-B of N" footer. Kept as a small standalone
+// renderer (not inlined into loadStudentData) so it's easy to re-skin
+// later, e.g. to numbered page buttons, without touching fetch logic.
+function renderStudentTablePagination() {
+    const start = studentTableTotal === 0 ? 0 : (studentTablePage - 1) * STUDENT_TABLE_PAGE_SIZE + 1;
+    const end = Math.min(studentTablePage * STUDENT_TABLE_PAGE_SIZE, studentTableTotal);
+    return `
+        <p class="text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+            Showing ${start}&ndash;${end} of ${studentTableTotal}
+        </p>
+        <div class="flex items-center gap-2">
+            <button onclick="changeStudentPage(-1)" ${studentTablePage <= 1 ? 'disabled' : ''} class="px-3 py-1.5 rounded-lg text-[11px] font-extrabold uppercase tracking-wider border border-slate-300 text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"><i class="fa-solid fa-chevron-left mr-1"></i>Prev</button>
+            <span class="text-[11px] font-extrabold text-slate-500 uppercase tracking-wider px-1">Page ${studentTablePage} of ${studentTableTotalPages}</span>
+            <button onclick="changeStudentPage(1)" ${studentTablePage >= studentTableTotalPages ? 'disabled' : ''} class="px-3 py-1.5 rounded-lg text-[11px] font-extrabold uppercase tracking-wider border border-slate-300 text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">Next<i class="fa-solid fa-chevron-right ml-1"></i></button>
+        </div>
+    `;
+}
+function changeStudentPage(delta) {
+    const next = studentTablePage + delta;
+    if (next < 1 || next > studentTableTotalPages) return;
+    studentTablePage = next;
+    loadStudentData();
+}
+/* ---------------------------------------------------------
+   4b. STUDENT PROFILE MODAL
+   Read-only view of one learner's historical attendance and
+   performance summary. Reuses getAttendanceSummary(),
+   getOLevelSubjectRecords()/getALevelSubjectRecords() and
+   buildPerformanceRemark() exactly as report cards already do —
+   no grading or attendance calculation is duplicated or altered.
+   --------------------------------------------------------- */
+function closeModal() {
+    const root = document.getElementById('modal-root');
+    if (root) root.innerHTML = '';
+}
+async function openStudentProfileModal(studentId) {
+    const root = document.getElementById('modal-root');
+    if (!root) return;
+    const student = studentsList.find(s => s.id === studentId);
+    if (!student) return;
+    root.innerHTML = `
+        <div class="fixed inset-0 bg-slate-900/60 flex items-center justify-center z-50 p-4" onclick="if(event.target===this) closeModal()">
+            <div class="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[85vh] overflow-y-auto">
+                <div class="flex items-center justify-between p-5 border-b border-slate-200 sticky top-0 bg-white rounded-t-2xl">
+                    <div class="flex items-center gap-3">
+                        <div class="w-12 h-12 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center overflow-hidden flex-shrink-0">
+                            ${student.photoUrl
+                                ? `<img src="${escapeHTML(student.photoUrl)}" class="w-full h-full object-cover" alt="${escapeHTML(student.name)}">`
+                                : `<i class="fa-solid fa-user text-slate-300 text-lg"></i>`}
+                        </div>
+                        <div>
+                            <h3 class="text-sm font-extrabold text-slate-900">${escapeHTML(student.name)}</h3>
+                            <p class="text-[11px] font-bold text-slate-500 uppercase tracking-wider">${escapeHTML(student.id)} &middot; ${escapeHTML(student.class)} &middot; ${escapeHTML(student.gender)}</p>
+                        </div>
+                    </div>
+                    <button onclick="closeModal()" class="text-slate-400 hover:text-slate-600 text-lg px-2">&#10005;</button>
+                </div>
+                <div id="student-profile-body" class="p-5 space-y-5 text-center text-slate-400 text-xs font-semibold py-10">
+                    <i class="fa-solid fa-spinner fa-spin mr-1.5"></i>Loading attendance &amp; performance history&hellip;
+                </div>
+            </div>
+        </div>
+    `;
+    // Attendance history needs this student's full record, not just the
+    // recent rolling window already loaded — same on-demand fetch the
+    // report card engine already uses (refreshAttendanceForStudent).
+    // Report card remarks (Class Teacher's / Headteacher's comments) get
+    // the same on-demand pull, for the same reason: this student may not
+    // be part of the currently-open class roster, so reportRemarksStorage
+    // might not have their comments yet. This merges every term/year on
+    // file for them into reportRemarksStorage (see refreshReportRemarksForStudent),
+    // so whichever term/year the modal displays always reflects what's on
+    // the server.
+    await Promise.all([
+        refreshAttendanceForStudent(student.id),
+        refreshReportRemarksForStudent(student.id)
+    ]);
+    renderStudentProfileBody(student);
+}
+// Re-render just the profile modal's body (attendance + performance summary)
+// from current in-memory state. Split out from openStudentProfileModal so
+// removeStudentSubject() below can refresh the list immediately after a
+// subject is deleted without re-fetching attendance or re-opening the modal.
+// containerId defaults to the admin/teacher modal's body element, but can be
+// pointed at another container (e.g. the Student role's own dashboard
+// summary) so this same attendance/performance rendering logic isn't
+// duplicated elsewhere.
+function renderStudentProfileBody(student, containerId = 'student-profile-body') {
+    const body = document.getElementById(containerId);
+    if (!body) return; // modal was closed (or container not on page) while loading
+    const isALevel = (student.class === 'S.5' || student.class === 'S.6');
+    const subjectRecords = isALevel ? getALevelSubjectRecords(student) : getOLevelSubjectRecords(student);
+    const attendance = getAttendanceSummary(student);
+    const performanceRemark = buildPerformanceRemark(subjectRecords, isALevel);
+    const canManageScores = getPermissions(currentUser.role).canManageScores;
+
+    const subjectRowsHtml = subjectRecords.length > 0 ? subjectRecords.map(r => {
+        const score = isALevel ? r.avgMark : r.finalTotal;
+        const grade = isALevel ? r.gradeInfo.grade : r.gradeData.grade;
+        const removeBtn = canManageScores
+            ? `<button onclick="removeStudentSubject('${student.id}', '${r.subj}')" title="Remove ${r.subj} from this student" class="text-rose-600 hover:text-rose-700 hover:bg-rose-50 rounded-md w-6 h-6 inline-flex items-center justify-center transition-colors"><i class="fa-solid fa-trash text-[11px]"></i></button>`
+            : '';
+        return `<tr class="border-b border-slate-100"><td class="p-2 font-semibold">${r.subj}</td><td class="p-2 text-center">${displayOrDash(score)}</td><td class="p-2 text-center font-extrabold" style="color:${getPerformanceColor(score, isALevel)};">${displayOrDash(grade)}</td><td class="p-2 text-center">${removeBtn}</td></tr>`;
+    }).join('') : `<tr><td colspan="4" class="p-4 text-center text-slate-400">No subject scores recorded yet.</td></tr>`;
+
+    body.innerHTML = `
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div class="bg-slate-50 border border-slate-200 rounded-xl p-3 text-center">
+                <p class="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider">Attendance</p>
+                <p class="text-lg font-extrabold text-slate-900">${attendance.total > 0 ? `${attendance.pct}%` : 'N/A'}</p>
+                <p class="text-[10px] text-slate-500">${attendance.total > 0 ? `${attendance.present} present / ${attendance.total} recorded` : 'No records yet'}</p>
+            </div>
+            <div class="bg-slate-50 border border-slate-200 rounded-xl p-3 text-center">
+                <p class="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider">Absences</p>
+                <p class="text-lg font-extrabold text-rose-600">${attendance.absent}</p>
+                <p class="text-[10px] text-slate-500">${attendance.excused} excused</p>
+            </div>
+            <div class="bg-slate-50 border border-slate-200 rounded-xl p-3 text-center">
+                <p class="text-[10px] font-extrabold text-slate-500 uppercase tracking-wider">Subjects Recorded</p>
+                <p class="text-lg font-extrabold text-slate-900">${subjectRecords.length}</p>
+                <p class="text-[10px] text-slate-500">${isALevel ? 'A-Level' : 'O-Level'} scale</p>
+            </div>
+        </div>
+        <div>
+            <h4 class="text-[11px] font-extrabold text-slate-500 uppercase tracking-wider mb-2">Performance Summary</h4>
+            <table class="w-full text-xs border border-slate-200 rounded-lg overflow-hidden">
+                <thead><tr class="bg-slate-50 text-slate-500 uppercase text-[10px] font-extrabold"><th class="p-2 text-left">Subject</th><th class="p-2 text-center">Score</th><th class="p-2 text-center">Grade</th><th class="p-2 text-center">${canManageScores ? 'Remove' : ''}</th></tr></thead>
+                <tbody>${subjectRowsHtml}</tbody>
+            </table>
+        </div>
+        <div class="bg-teal-50 border border-teal-200 rounded-xl p-3">
+            <h4 class="text-[11px] font-extrabold text-teal-700 uppercase tracking-wider mb-1">System Summary</h4>
+            <p class="text-xs text-teal-900">${performanceRemark}</p>
+        </div>
+        ${buildModalOverallMetricBox(student, subjectRecords, isALevel)}
+        ${buildModalCommentsSection(student)}
+        ${buildModalSaveSection(student)}
+    `;
+}
+/* ---------------------------------------------------------
+   4b-i. MODAL OVERALL ACHIEVEMENT / TOTAL POINTS BOX
+   Surfaces the same tier-evaluation metric the report card
+   footer already shows ("Overall Achievement" for O-Level via
+   calculateOLevelOverallAchievement/getOverallIdentifier, "Total
+   Points" for A-Level via the same points sum buildALevelReportPage
+   uses) directly in the Student Summary Modal, so a teacher or the
+   headteacher can gauge a learner's overall performance tier without
+   opening the full report card. Reuses those exact existing
+   functions — no grading scale, denominator, or points table is
+   redefined here.
+   Empty-state guard: calculateOLevelOverallAchievement() returns 0
+   (and getOverallIdentifier(0) reads "BASIC") when no subject has a
+   valid mark yet, and an empty A-Level points sum is likewise 0 —
+   both would misleadingly look like a real failing result rather
+   than "nothing entered yet". This box only computes/shows a value
+   once at least one subject has a valid recorded mark; otherwise it
+   shows an explicit "Not yet available" empty state.
+   --------------------------------------------------------- */
+function buildModalOverallMetricBox(student, subjectRecords, isALevel) {
+    const hasGradedRecords = subjectRecords.length > 0;
+    if (isALevel) {
+        const totalPoints = hasGradedRecords
+            ? subjectRecords.reduce((sum, r) => sum + (r.gradeInfo.points ?? 0), 0)
+            : null;
+        return `
+        <div class="bg-blue-50 border border-blue-200 rounded-xl p-3 text-center">
+            <p class="text-[10px] font-extrabold text-blue-700 uppercase tracking-wider">Total Points</p>
+            <p class="text-2xl font-extrabold text-blue-900">${hasGradedRecords ? totalPoints : 'Not yet available'}</p>
+            <p class="text-[10px] text-blue-700">${hasGradedRecords ? 'Sum of subject grade points this term' : 'No graded subjects recorded yet'}</p>
+        </div>`;
+    }
+    const overallAvg = hasGradedRecords ? calculateOLevelOverallAchievement(student.class, subjectRecords) : null;
+    const overallIdentifier = overallAvg !== null ? getOverallIdentifier(overallAvg) : null;
+    return `
+        <div class="bg-blue-50 border border-blue-200 rounded-xl p-3 text-center">
+            <p class="text-[10px] font-extrabold text-blue-700 uppercase tracking-wider">Overall Achievement</p>
+            <p class="text-2xl font-extrabold text-blue-900">${hasGradedRecords ? `${overallAvg.toFixed(1)} &mdash; ${overallIdentifier}` : 'Not yet available'}</p>
+            <p class="text-[10px] text-blue-700">${hasGradedRecords ? 'Weighted against ' + (O_LEVEL_TIER_SUBJECT_COUNTS[student.class] || 12) + '-subject tier load' : 'No graded subjects recorded yet'}</p>
+        </div>`;
+}
+/* ---------------------------------------------------------
+   4b-ii. MODAL COMMENT INPUT FIELDS
+   Class Teacher's / Headteacher's comment fields, directly in the
+   Student Summary Modal. Backed by the exact same reportRemarksStorage
+   cache and RemarksAPI.save()/report_card_remarks table the report
+   card footer's comment boxes already use (see buildCommentRow and
+   saveReportRemark above) — so a comment saved here IS the comment
+   that appears on the generated report card for this student/term/
+   year, with no separate storage or sync step needed. Scoped to the
+   term/year currently selected in Term Settings (termSettings),
+   matching every other term-scoped view in the app (report card
+   preview/generation, term badge).
+   Editable only for roles with canViewAllReports (Administrator/
+   Teacher — the same gate the report card's own comment boxes use;
+   this app has no separate "Headteacher" login role, so a
+   headteacher signs in as an Administrator). For a Student viewing
+   their own summary, the fields render read-only, exactly like the
+   read-only comment lines on their own report card view.
+   --------------------------------------------------------- */
+function buildModalCommentsSection(student) {
+    const editable = getPermissions(currentUser.role).canViewAllReports;
+    // Scoped to whichever term/year is currently being VIEWED (the sidebar
+    // term switcher), same as the subject scores above (getALevelSubjectRecords/
+    // getOLevelSubjectRecords) — not termSettings.term/year directly, which is
+    // the school's live active term and does not change when Admin/Teacher
+    // browses a past term. Using termSettings here was the bug: scores/
+    // attendance correctly followed the switcher while this comment box kept
+    // showing/saving against the live term regardless of what was selected.
+    const { term, year } = getViewedTermYear();
+    const key = getReportRemarkKey(student.id, term, year);
+    const classTeacherValue = getReportRemark(student.id, term, year, 'classTeacherComment');
+    const headteacherValue = getReportRemark(student.id, term, year, 'headteacherComment');
+
+    const fieldHtml = (label, field, value) => editable
+        ? `<div>
+                <label class="block text-[11px] font-extrabold text-slate-500 uppercase mb-1">${label}</label>
+                <textarea rows="2" data-remark-key="${key}" data-remark-field="${field}" oninput="saveModalRemark(this)" placeholder="No comment yet &mdash; type to add one&hellip;" class="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700 resize-none">${value ? escapeHTML(value) : ''}</textarea>
+           </div>`
+        : `<div>
+                <p class="block text-[11px] font-extrabold text-slate-500 uppercase mb-1">${label}</p>
+                <p class="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-700 min-h-[2.5rem]">${value ? escapeHTML(value) : 'No comment recorded yet.'}</p>
+           </div>`;
+
+    return `
+        <div>
+            <div class="flex items-center justify-between mb-2">
+                <h4 class="text-[11px] font-extrabold text-slate-500 uppercase tracking-wider">Report Card Comments</h4>
+                <span class="text-[10px] font-bold text-slate-400 uppercase tracking-wider">${escapeHTML(term)}, ${escapeHTML(String(year))}</span>
+            </div>
+            <div class="space-y-3">
+                ${fieldHtml("Class Teacher's Comment", 'classTeacherComment', classTeacherValue)}
+                ${fieldHtml("Headteacher's Comment", 'headteacherComment', headteacherValue)}
+            </div>
+        </div>`;
+}
+// Debounced save for the modal's comment textareas — mirrors
+// saveReportRemark() above exactly (same reportRemarksStorage cache,
+// same localStorage best-effort backup, same RemarksAPI.save() call,
+// same 800ms-after-typing-pauses debounce keyed per remark row), but
+// reads el.value instead of el.innerText since this is a plain
+// <textarea> rather than a contenteditable div. Kept as its own
+// function rather than reusing saveReportRemark directly so the
+// report card's existing contenteditable comment boxes are never
+// touched by this change.
+const modalRemarkSaveTimers = {};
+function saveModalRemark(el) {
+    if (!getPermissions(currentUser.role).canViewAllReports) return; // RBAC guard
+    const key = el.dataset.remarkKey;
+    const field = el.dataset.remarkField;
+    if (!key || !field) return;
+    if (!reportRemarksStorage[key]) reportRemarksStorage[key] = {};
+    reportRemarksStorage[key][field] = el.value.trim();
+    persistReportRemarks(); // best-effort offline cache only — same as saveReportRemark
+
+    clearTimeout(modalRemarkSaveTimers[key]);
+    modalRemarkSaveTimers[key] = setTimeout(() => {
+        const parts = key.split('_');
+        if (parts.length !== 3) return; // defensive: unexpected key shape, skip remote save
+        const [studentId, term, year] = parts;
+        RemarksAPI.save(studentId, term, year, { [field]: reportRemarksStorage[key][field] })
+            .catch(() => { /* offline/unreachable — localStorage copy above still holds the latest text; will be rescued at next login */ });
+    }, 800);
+}
+/* ---------------------------------------------------------
+   4b-iii. MODAL EXPLICIT SAVE BUTTON
+   saveModalRemark() above already autosaves 800ms after typing
+   pauses, but teachers/the headteacher asked for a visible, explicit
+   "Save" action so it's clear their comments were actually written
+   to the record (rather than trusting a silent background save).
+   Pressing it flushes both comment fields immediately — cancelling
+   any pending debounce timers and sending both classTeacherComment
+   and headteacherComment together — and calls the exact same
+   RemarksAPI.save()/report_card_remarks table the report card's own
+   comment boxes and the autosave path use, so a click here IS what
+   the generated report card will show; no separate storage or sync
+   step exists. Only rendered for roles that can edit (canViewAllReports)
+   — a read-only viewer (e.g. Student) never sees it, matching
+   buildModalCommentsSection's own edit gate.
+   --------------------------------------------------------- */
+function buildModalSaveSection(student) {
+    if (!getPermissions(currentUser.role).canViewAllReports) return '';
+    return `
+        <div class="flex items-center justify-end gap-3 pt-1">
+            <span id="modal-save-status" class="text-[11px] font-bold text-slate-400"></span>
+            <button type="button" onclick="saveModalRemarksNow('${student.id}', this)" class="btn-neu-light text-xs font-extrabold uppercase tracking-wider px-5 py-2.5 rounded-xl shadow-sm transition-colors">
+                <i class="fa-solid fa-floppy-disk mr-1.5"></i>Save
+            </button>
+        </div>`;
+}
+async function saveModalRemarksNow(studentId, buttonEl) {
+    if (!getPermissions(currentUser.role).canViewAllReports) return; // RBAC guard
+    // Same viewed-term scoping as buildModalCommentsSection — must match
+    // exactly, or the "key" computed here (used to find the textareas on
+    // screen) would point at a different term/year than what's actually
+    // displayed, saving the comment under the wrong term.
+    const { term, year } = getViewedTermYear();
+    const key = getReportRemarkKey(studentId, term, year);
+    const container = buttonEl ? buttonEl.closest('#student-profile-body, #own-dashboard-summary-body') : document;
+    const classTeacherEl = container ? container.querySelector(`textarea[data-remark-key="${key}"][data-remark-field="classTeacherComment"]`) : null;
+    const headteacherEl = container ? container.querySelector(`textarea[data-remark-key="${key}"][data-remark-field="headteacherComment"]`) : null;
+    const classTeacherComment = classTeacherEl ? classTeacherEl.value.trim() : (getReportRemark(studentId, term, year, 'classTeacherComment') || '');
+    const headteacherComment = headteacherEl ? headteacherEl.value.trim() : (getReportRemark(studentId, term, year, 'headteacherComment') || '');
+
+    // Cancel any pending autosave debounce for this row — this explicit
+    // save supersedes it so the same text isn't sent to the server twice.
+    clearTimeout(modalRemarkSaveTimers[key]);
+
+    reportRemarksStorage[key] = { classTeacherComment, headteacherComment };
+    persistReportRemarks(); // best-effort offline cache only, same as saveModalRemark
+
+    const statusEl = document.getElementById('modal-save-status');
+    if (buttonEl) buttonEl.disabled = true;
+    if (statusEl) statusEl.textContent = 'Saving…';
+    try {
+        await RemarksAPI.save(studentId, term, year, { classTeacherComment, headteacherComment });
+        if (statusEl) statusEl.textContent = 'Saved';
+        showToast('Comments saved — the report card for this student will reflect them.', 'success', 4000);
+    } catch (err) {
+        if (statusEl) statusEl.textContent = '';
+        showToast(err.message || 'Could not save comments. Please check your connection and try again.', 'error');
+    } finally {
+        if (buttonEl) buttonEl.disabled = false;
+    }
+}
+// Manually unlinks one subject from one student: deletes that subject's
+// scores row outright (server-side, via ScoresAPI.remove) rather than
+// clearing the mark fields through the normal save path — a plain clear-and-
+// save would hit the sticky `touched` OR-merge on the backend and the
+// subject would silently reappear. Scoped to a single record_key, so it
+// can never affect this subject for any other student, the global subject
+// lists, grading scale, or report-card calculation logic.
+async function removeStudentSubject(studentId, subject) {
+    if (!getPermissions(currentUser.role).canManageScores) return; // RBAC guard
+    if (!confirm(`Remove ${subject} from this student? This clears all recorded marks for it and cannot be undone.`)) return;
+    const { term, year } = getViewedTermYear();
+    const recordKey = buildScoreRecordKey(subject, studentId, term, year);
+    try {
+        await ScoresAPI.remove(recordKey);
+    } catch (err) {
+        alert(err.message || 'Could not remove this subject. Please try again.');
+        return;
+    }
+    delete marksStorage[recordKey];
+    await refreshScoresList();
+    const student = studentsList.find(s => s.id === studentId);
+    if (student) renderStudentProfileBody(student);
+}
+function toggleStudentForm() {
+    const formContainer = document.getElementById('student-form-container');
+    if (formContainer) formContainer.classList.toggle('hidden');
+}
+/* ---------------------------------------------------------
+   4c. BULK STUDENT IMPORT (CSV)
+   Parses a CSV of an entire class and registers every valid row
+   by calling StudentsAPI.create() once per student — the exact
+   same create path (and duplicate-ID / required-field rules) as
+   adding one student by hand via the form above. No new backend
+   route, no bypass of existing validation.
+   Expected header row: id,name,class,gender
+   --------------------------------------------------------- */
+const BULK_IMPORT_VALID_CLASSES = ['S.1', 'S.2', 'S.3', 'S.4', 'S.5', 'S.6'];
+let bulkImportParsedRows = [];
+function openBulkImportModal() {
+    if (!getPermissions(currentUser.role).canManageStudents) return; // RBAC guard
+    const root = document.getElementById('modal-root');
+    if (!root) return;
+    bulkImportParsedRows = [];
+    root.innerHTML = `
+        <div class="fixed inset-0 bg-slate-900/60 flex items-center justify-center z-50 p-4" onclick="if(event.target===this) closeModal()">
+            <div class="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[85vh] overflow-y-auto">
+                <div class="flex items-center justify-between p-5 border-b border-slate-200 sticky top-0 bg-white rounded-t-2xl">
+                    <h3 class="text-sm font-extrabold text-slate-900"><i class="fa-solid fa-file-csv mr-2 text-teal-600"></i>Bulk Import Students</h3>
+                    <button onclick="closeModal()" class="text-slate-400 hover:text-slate-600 text-lg px-2">&#10005;</button>
+                </div>
+                <div class="p-5 space-y-4">
+                    <p class="text-xs text-slate-600">Upload a CSV to register an entire class at once. First row must be a header: <code class="bg-slate-100 px-1.5 py-0.5 rounded font-mono">id,name,class,gender</code></p>
+                    <button type="button" onclick="downloadBulkImportTemplate()" class="text-[11px] font-extrabold uppercase tracking-wider text-teal-700 hover:text-teal-800"><i class="fa-solid fa-download mr-1"></i>Download Sample CSV Template</button>
+                    <div>
+                        <label class="block text-[11px] font-extrabold text-slate-500 uppercase tracking-wider mb-1">CSV File</label>
+                        <input type="file" id="bulk-import-file" accept=".csv,text/csv" onchange="handleBulkImportFile(event)" class="w-full text-xs font-semibold text-slate-700 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-teal-600 file:text-white file:text-xs file:font-extrabold file:uppercase file:cursor-pointer">
+                    </div>
+                    <div id="bulk-import-preview"></div>
+                </div>
+            </div>
+        </div>
+    `;
+}
+function downloadBulkImportTemplate() {
+    const csv = "id,name,class,gender\nKSS/101,Nakato Sarah,S.1,Female\nKSS/102,Mugisha Brian,S.1,Male\n";
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'student_import_template.csv';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+}
+function handleBulkImportFile(event) {
+    const file = event.target.files && event.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => parseAndPreviewCSV(String(e.target.result || ''));
+    reader.onerror = () => {
+        const preview = document.getElementById('bulk-import-preview');
+        if (preview) preview.innerHTML = `<p class="text-xs font-bold text-rose-600">Could not read that file. Please try again.</p>`;
+    };
+    reader.readAsText(file);
+}
+// Minimal CSV line splitter — handles simple quoted fields (",") which
+// covers names/values that might contain a comma; not a full RFC4180
+// parser, but sufficient for the plain id/name/class/gender template.
+function splitCSVLine(line) {
+    const result = [];
+    let current = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+        const char = line[i];
+        if (char === '"') { inQuotes = !inQuotes; continue; }
+        if (char === ',' && !inQuotes) { result.push(current.trim()); current = ''; continue; }
+        current += char;
+    }
+    result.push(current.trim());
+    return result;
+}
+function parseAndPreviewCSV(text) {
+    const preview = document.getElementById('bulk-import-preview');
+    if (!preview) return;
+    const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+    if (lines.length < 2) {
+        preview.innerHTML = `<p class="text-xs font-bold text-rose-600">No data rows found. Make sure the file has a header row followed by student rows.</p>`;
+        return;
+    }
+    const header = splitCSVLine(lines[0]).map(h => h.toLowerCase());
+    const idIdx = header.indexOf('id');
+    const nameIdx = header.indexOf('name');
+    const classIdx = header.indexOf('class');
+    const genderIdx = header.indexOf('gender');
+    if (idIdx === -1 || nameIdx === -1 || classIdx === -1 || genderIdx === -1) {
+        preview.innerHTML = `<p class="text-xs font-bold text-rose-600">Header row must contain: id, name, class, gender</p>`;
+        return;
+    }
+
+    const seenIds = new Set(studentsList.map(s => s.id.toUpperCase()));
+    const rows = [];
+    for (let i = 1; i < lines.length; i++) {
+        const cols = splitCSVLine(lines[i]);
+        const id = (cols[idIdx] || '').toUpperCase();
+        const name = cols[nameIdx] || '';
+        const cls = (cols[classIdx] || '').toUpperCase();
+        const genderRaw = (cols[genderIdx] || '').toLowerCase();
+        const gender = genderRaw.startsWith('f') ? 'Female' : (genderRaw.startsWith('m') ? 'Male' : '');
+
+        let error = '';
+        if (!id) error = 'Missing Student ID';
+        else if (!name) error = 'Missing Name';
+        else if (!BULK_IMPORT_VALID_CLASSES.includes(cls)) error = `Invalid class "${cols[classIdx] || ''}"`;
+        else if (!gender) error = `Invalid gender "${cols[genderIdx] || ''}"`;
+        else if (seenIds.has(id)) error = 'Duplicate / already registered ID';
+
+        if (!error) seenIds.add(id); // guards against duplicates within the file itself too
+        rows.push({ id, name, class: cls, gender, error });
+    }
+
+    bulkImportParsedRows = rows;
+    const validCount = rows.filter(r => !r.error).length;
+    const invalidCount = rows.length - validCount;
+
+    preview.innerHTML = `
+        <div class="flex items-center justify-between">
+            <p class="text-xs font-bold text-slate-700">${validCount} ready to import${invalidCount > 0 ? `, ${invalidCount} with errors (skipped)` : ''}.</p>
+            <button ${validCount === 0 ? 'disabled' : ''} onclick="confirmBulkImport()" class="bg-teal-600 hover:bg-teal-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-extrabold uppercase tracking-wider py-2 px-4 rounded-xl transition"><i class="fa-solid fa-upload mr-1.5"></i>Import ${validCount} Student(s)</button>
+        </div>
+        <div class="mt-3 max-h-64 overflow-y-auto border border-slate-200 rounded-xl">
+            <table class="w-full text-xs">
+                <thead class="sticky top-0"><tr class="bg-slate-50 text-slate-500 uppercase text-[10px] font-extrabold"><th class="p-2 text-left">ID</th><th class="p-2 text-left">Name</th><th class="p-2 text-left">Class</th><th class="p-2 text-left">Gender</th><th class="p-2 text-left">Status</th></tr></thead>
+                <tbody class="divide-y divide-slate-100">
+                    ${rows.map(r => `
+                        <tr class="${r.error ? 'bg-rose-50' : ''}">
+                            <td class="p-2 font-mono">${escapeHTML(r.id) || '&mdash;'}</td>
+                            <td class="p-2">${escapeHTML(r.name) || '&mdash;'}</td>
+                            <td class="p-2">${escapeHTML(r.class) || '&mdash;'}</td>
+                            <td class="p-2">${escapeHTML(r.gender) || '&mdash;'}</td>
+                            <td class="p-2 font-bold ${r.error ? 'text-rose-600' : 'text-emerald-600'}">${r.error ? r.error : 'Ready'}</td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        </div>
+    `;
+}
+async function confirmBulkImport() {
+    if (!getPermissions(currentUser.role).canManageStudents) return; // RBAC guard
+    const preview = document.getElementById('bulk-import-preview');
+    const validRows = bulkImportParsedRows.filter(r => !r.error);
+    if (validRows.length === 0) return;
+    if (preview) preview.innerHTML = `<p class="text-xs font-bold text-slate-500"><i class="fa-solid fa-spinner fa-spin mr-1.5"></i>Importing ${validRows.length} student(s)&hellip;</p>`;
+
+    let successCount = 0;
+    const failures = [];
+    // Sequential (not parallel) on purpose: each create() must see the
+    // previous one already registered so duplicate-ID checks against a
+    // real backend stay accurate, exactly like adding students one by one.
+    for (const row of validRows) {
+        try {
+            await StudentsAPI.create({ id: row.id, name: row.name, class: row.class, gender: row.gender });
+            successCount++;
+        } catch (err) {
+            failures.push(`${row.id}: ${err.message || 'failed to save'}`);
+        }
+    }
+
+    await refreshStudentsList();
+    studentTablePage = 1; // newly-imported rows should be visible, not stranded off the current page
+    await loadStudentData();
+    updateDashboardStats();
+
+    if (preview) {
+        preview.innerHTML = `
+            <div class="text-xs font-bold ${failures.length === 0 ? 'text-emerald-700' : 'text-amber-700'}">
+                Imported ${successCount} of ${validRows.length} student(s) successfully.
+            </div>
+            ${failures.length > 0 ? `<ul class="mt-2 text-[11px] text-rose-600 list-disc list-inside space-y-0.5">${failures.map(f => `<li>${escapeHTML(f)}</li>`).join('')}</ul>` : ''}
+            <button onclick="closeModal()" class="mt-3 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-extrabold uppercase py-2 px-4 rounded-xl transition">Close</button>
+        `;
+    }
+}
+async function handleAddStudent(event) {
+    event.preventDefault();
+    if (!getPermissions(currentUser.role).canManageStudents) return; // RBAC guard
+    const newStudent = {
+        id: getInputValue('stud-id').trim().toUpperCase(),
+        name: getInputValue('stud-name').trim(),
+        class: getInputValue('stud-class'),
+        gender: getInputValue('stud-gender')
+    };
+    if (newStudent.id === '' || newStudent.name === '') {
+        alert('Please provide both a Student ID and a Full Name.');
+        return;
+    }
+    if (studentsList.some(s => s.id.toUpperCase() === newStudent.id)) {
+        alert(`Student ID "${newStudent.id}" is already registered. Please use a unique ID.`);
+        return;
+    }
+    try {
+        await StudentsAPI.create(newStudent);
+    } catch (err) {
+        alert(err.message || 'Could not save this student. Please try again.');
+        return;
+    }
+    await refreshStudentsList();
+    studentTablePage = 1;
+    await loadStudentData();
+    toggleStudentForm();
+    const studIdEl = document.getElementById('stud-id');
+    const studNameEl = document.getElementById('stud-name');
+    if (studIdEl) studIdEl.value = "";
+    if (studNameEl) studNameEl.value = "";
+    updateDashboardStats();
+}
+async function deleteStudent(studentId) {
+    if (!getPermissions(currentUser.role).canManageStudents) return; // RBAC guard
+    if (!confirm("Are you sure you want to remove this student record?")) return;
+    try {
+        await StudentsAPI.remove(studentId);
+    } catch (err) {
+        alert(err.message || 'Could not delete this student. Please try again.');
+        return;
+    }
+    await refreshStudentsList();
+    // If this was the last row on the current page, step back a page
+    // instead of loading an empty one.
+    if (studentTablePage > 1 && studentTablePage >= studentTableTotalPages) studentTablePage -= 1;
+    await loadStudentData();
+    updateDashboardStats();
+}
+// ---------------------------------------------------------
+// Edit Student (Administrator only). Mirrors openEditTeacherModal /
+// submitEditTeacher — reuses the existing #modal-root + closeModal()
+// pattern and StudentsAPI.update(). Also frontend-gated by
+// canManageStudents so non-admins never see the button or reach this code;
+// the backend PUT /api/students/:id route is the real enforcement point.
+function openEditStudentModal(studentId) {
+    if (!getPermissions(currentUser.role).canManageStudents) return; // RBAC guard: Administrator only
+    const root = document.getElementById('modal-root');
+    if (!root) return;
+    const student = studentsList.find(s => s.id === studentId);
+    if (!student) return;
+    root.innerHTML = `
+        <div class="fixed inset-0 bg-slate-900/60 flex items-center justify-center z-50 p-4" onclick="if(event.target===this) closeModal()">
+            <div class="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
+                <div class="flex items-center justify-between p-5 border-b border-slate-200">
+                    <h3 class="text-sm font-extrabold text-slate-900"><i class="fa-solid fa-pen mr-2 text-blue-600"></i>Edit Student</h3>
+                    <button onclick="closeModal()" class="text-slate-400 hover:text-slate-600 text-lg px-2">&#10005;</button>
+                </div>
+                <form onsubmit="submitEditStudent(event, '${student.id}')" class="p-5 space-y-4">
+                    <div class="flex items-center gap-4 pb-1">
+                        <div id="edit-stud-photo-preview" class="w-16 h-16 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center overflow-hidden flex-shrink-0">
+                            ${student.photoUrl
+                                ? `<img src="${escapeHTML(student.photoUrl)}" class="w-full h-full object-cover" alt="${escapeHTML(student.name)}">`
+                                : `<i class="fa-solid fa-user text-slate-300 text-xl"></i>`}
+                        </div>
+                        <div>
+                            <label class="inline-block cursor-pointer text-teal-700 hover:text-teal-800 text-[11px] font-extrabold uppercase tracking-wider bg-teal-50 hover:bg-teal-100 px-3 py-1.5 rounded-lg border border-teal-200 transition-colors">
+                                <i class="fa-solid fa-camera mr-1.5"></i>${student.photoUrl ? 'Change Photo' : 'Add Photo'}
+                                <input type="file" accept="image/*" class="hidden" onchange="handleStudentPhotoFileSelected(event, '${student.id}')">
+                            </label>
+                            <p id="edit-stud-photo-status" class="mt-1 text-[10px] font-semibold text-slate-400">JPG or PNG &middot; resized automatically before saving.</p>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-extrabold text-slate-500 uppercase mb-1">Student ID</label>
+                        <input type="text" id="edit-stud-id" value="${escapeHTML(student.id)}" required class="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700">
+                        <p class="mt-1 text-[10px] font-semibold text-amber-600">Changing this resets the student's login username &amp; password to the new ID.</p>
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-extrabold text-slate-500 uppercase mb-1">Full Name</label>
+                        <input type="text" id="edit-stud-name" value="${escapeHTML(student.name)}" required class="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-extrabold text-slate-500 uppercase mb-1">Class Level</label>
+                        <select id="edit-stud-class" class="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-700">
+                            ${['S.1','S.2','S.3','S.4','S.5','S.6'].map(c => `<option value="${c}" ${student.class === c ? 'selected' : ''}>${c}</option>`).join('')}
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-extrabold text-slate-500 uppercase mb-1">Gender</label>
+                        <select id="edit-stud-gender" class="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-700">
+                            <option value="Male" ${student.gender === 'Male' ? 'selected' : ''}>Male</option>
+                            <option value="Female" ${student.gender === 'Female' ? 'selected' : ''}>Female</option>
+                        </select>
+                    </div>
+                    <div class="flex justify-end space-x-2 pt-2">
+                        <button type="button" onclick="closeModal()" class="bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-extrabold uppercase py-2 px-4 rounded-xl"><i class="fa-solid fa-xmark mr-1.5"></i>Cancel</button>
+                        <button type="submit" class="btn-neu-light text-xs font-extrabold uppercase py-2 px-4 rounded-xl transition"><i class="fa-solid fa-floppy-disk mr-1.5"></i>Save Changes</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    `;
+}
+async function submitEditStudent(event, originalId) {
+    event.preventDefault();
+    if (!getPermissions(currentUser.role).canManageStudents) return; // RBAC guard: Administrator only
+    const student = studentsList.find(s => s.id === originalId);
+    if (!student) return;
+    const updates = {
+        id: getInputValue('edit-stud-id').trim().toUpperCase(),
+        name: getInputValue('edit-stud-name').trim(),
+        class: getInputValue('edit-stud-class'),
+        gender: getInputValue('edit-stud-gender')
+    };
+    if (updates.id === '' || updates.name === '') {
+        alert('Please provide both a Student ID and a Full Name.');
+        return;
+    }
+    if (updates.id !== originalId.toUpperCase() && studentsList.some(s => s.id.toUpperCase() === updates.id)) {
+        alert(`Student ID "${updates.id}" is already registered. Please use a unique ID.`);
+        return;
+    }
+    if (updates.id !== originalId.toUpperCase() && !confirm(`Changing the Student ID to "${updates.id}" will reset this student's login username and password to "${updates.id}". Continue?`)) {
+        return;
+    }
+    try {
+        await StudentsAPI.update(originalId, updates);
+    } catch (err) {
+        alert(err.message || 'Could not update this student. Please try again.');
+        return;
+    }
+    await refreshStudentsList();
+    closeModal();
+    await loadStudentData();
+    updateDashboardStats();
+}
+// Fires the moment a file is picked in the Edit Student modal's photo
+// input — deliberately saves immediately (its own resize -> upload ->
+// StudentsAPI.setPhoto sequence) rather than waiting for the form's
+// "Save Changes" button, since a photo isn't one of that form's fields
+// and shouldn't be held hostage by unrelated validation on Name/Class/
+// Gender. Safe to fire even if the admin also edits other fields
+// afterward: the photo is already saved server-side by then.
+async function handleStudentPhotoFileSelected(event, studentId) {
+    const file = event.target.files && event.target.files[0];
+    if (!file) return;
+    const preview = document.getElementById('edit-stud-photo-preview');
+    const status = document.getElementById('edit-stud-photo-status');
+    if (!file.type.startsWith('image/')) {
+        if (status) { status.textContent = 'Please choose an image file.'; status.className = 'mt-1 text-[10px] font-semibold text-rose-600'; }
+        event.target.value = '';
+        return;
+    }
+    if (status) { status.textContent = 'Resizing & uploading\u2026'; status.className = 'mt-1 text-[10px] font-semibold text-slate-400'; }
+    try {
+        const resizedBlob = await resizeImageFile(file);
+        const uploadableFile = new File([resizedBlob], `${studentId}-photo.jpg`, { type: 'image/jpeg' });
+        const photoUrl = await UploadAPI.uploadFile(uploadableFile);
+        await StudentsAPI.setPhoto(studentId, photoUrl);
+
+        // Keep the in-memory roster in sync so the report card
+        // generator and the profile modal see the new photo immediately
+        // without needing a full refetch.
+        const cached = studentsList.find(s => s.id === studentId);
+        if (cached) cached.photoUrl = photoUrl;
+
+        if (preview) preview.innerHTML = `<img src="${escapeHTML(photoUrl)}" class="w-full h-full object-cover" alt="Student photo">`;
+        if (status) { status.textContent = 'Photo saved.'; status.className = 'mt-1 text-[10px] font-semibold text-emerald-600'; }
+    } catch (err) {
+        if (status) { status.textContent = err.message || 'Could not upload this photo. Please try again.'; status.className = 'mt-1 text-[10px] font-semibold text-rose-600'; }
+    } finally {
+        event.target.value = ''; // allow re-selecting the same file if they retry
+    }
+}
+/* ---------------------------------------------------------
+   5. SCORE SHEETS MODULE (Light Theme)
+   --------------------------------------------------------- */
+function renderScoresModule() {
+    return `
+        <div class="space-y-6">
+            <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white border border-slate-200 p-5 rounded-2xl shadow-xs">
+                <div class="flex flex-wrap items-center gap-4">
+                    <div>
+                        <label class="block text-[11px] font-extrabold text-slate-500 uppercase tracking-wider mb-1">Select Class Level</label>
+                        <select id="score-class-select" onchange="onClassLevelChange()" class="p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-extrabold text-slate-700 focus:ring-1 focus:ring-teal-500">
+                            <optgroup label="O-Level (S.1 - S.4)">
+                                <option value="S.1">S.1</option>
+                                <option value="S.2">S.2</option>
+                                <option value="S.3">S.3</option>
+                                <option value="S.4">S.4</option>
+                            </optgroup>
+                            <optgroup label="A-Level (S.5 - S.6)">
+                                <option value="S.5">S.5</option>
+                                <option value="S.6">S.6</option>
+                            </optgroup>
+                        </select>
+                    </div>
+                    <div class="flex items-end gap-2">
+                        <div>
+                            <label class="block text-[11px] font-extrabold text-slate-500 uppercase tracking-wider mb-1">Subject</label>
+                            <select id="score-subject-select" class="p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-700"></select>
+                        </div>
+                        <button onclick="loadScoreSheetData()" class="btn-neu-light text-xs font-extrabold uppercase py-2.5 px-3 rounded-xl transition shadow-xs"><i class="fa-solid fa-download mr-1.5"></i>Load Subject</button>
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-extrabold text-slate-500 uppercase tracking-wider mb-1">Search Students</label>
+                        <div class="relative w-full md:w-64">
+                            <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-[11px] pointer-events-none"></i>
+                            <input type="text" id="score-search" oninput="filterScoreSheetTable()" placeholder="Search by ID or name..." autocomplete="off" class="w-full p-2.5 pl-8 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-700 focus:outline-none focus:ring-1 focus:ring-teal-500">
+                        </div>
+                    </div>
+                </div>
+                <button onclick="saveMarksEntry(this)" class="btn-neu-light text-xs font-extrabold uppercase tracking-wider py-2.5 px-4 rounded-xl transition shadow-xs"><i class="fa-solid fa-floppy-disk mr-1.5"></i>Save Marks Entry</button>
+            </div>
+            <div id="score-table-empty-state" class="bg-white border border-slate-200 rounded-2xl shadow-xs p-10 text-center text-slate-400 text-xs font-medium">
+                Select a class and subject, then click "Load Subject" to view the marks entry table.
+            </div>
+            <div id="bulk-initials-bar" class="hidden flex flex-wrap items-end gap-3 bg-white border border-slate-200 p-4 rounded-2xl shadow-xs">
+                <div>
+                    <label class="block text-[11px] font-extrabold text-slate-500 uppercase tracking-wider mb-1">Teacher's Initial (applies to whole class/subject)</label>
+                    <input type="text" id="bulk-initials-input" maxlength="4" placeholder="e.g. JN" class="w-32 p-2.5 text-center bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold uppercase text-slate-800">
+                </div>
+                <button onclick="applyBulkInitials()" class="btn-neu-light text-xs font-extrabold uppercase tracking-wider py-2.5 px-4 rounded-xl transition shadow-xs"><i class="fa-solid fa-signature mr-1.5"></i>Apply to All</button>
+                <p class="text-[11px] text-slate-400 w-full md:w-auto md:ml-2">Fills in "TR's Initial" for every student already showing marks for this class &amp; subject. You can still override any single row below.</p>
+            </div>
+            <div id="score-table-wrapper" class="overflow-auto max-h-[65vh] bg-white border border-slate-200 rounded-2xl shadow-xs hidden">
+                <table class="w-full text-left score-table">
+                    <thead id="score-table-head"></thead>
+                    <tbody id="score-table-body" class="divide-y divide-slate-100 text-xs text-slate-700"></tbody>
+                </table>
+            </div>
+        </div>
+    `;
+}
+function onClassLevelChange() {
+    updateSubjectDropdown();
+    hideScoreSheetTable();
+}
+// Resets the marks entry table back to its default hidden state, showing
+// the empty-state placeholder instead. Used whenever the current selection
+// is no longer guaranteed to match what's displayed (e.g. class changed).
+function hideScoreSheetTable() {
+    const wrapper = document.getElementById('score-table-wrapper');
+    const emptyState = document.getElementById('score-table-empty-state');
+    const bulkBar = document.getElementById('bulk-initials-bar');
+    if (wrapper) wrapper.classList.add('hidden');
+    if (emptyState) emptyState.classList.remove('hidden');
+    if (bulkBar) bulkBar.classList.add('hidden');
+}
+function updateSubjectDropdown() {
+    const classSelect = document.getElementById('score-class-select');
+    const subjectSelect = document.getElementById('score-subject-select');
+    if (!classSelect || !subjectSelect) return;
+    const selectedClass = classSelect.value;
+    const isALevel = (selectedClass === 'S.5' || selectedClass === 'S.6');
+    const activeSubjects = isALevel ? aLevelSubjects : oLevelSubjects;
+    subjectSelect.innerHTML = activeSubjects.map(sub => `<option value="${sub}">${sub}</option>`).join('');
+}
+function loadNextSubject() {
+    const subjectSelect = document.getElementById('score-subject-select');
+    if (!subjectSelect || subjectSelect.options.length === 0) return;
+    subjectSelect.selectedIndex = (subjectSelect.selectedIndex + 1) % subjectSelect.options.length;
+    loadScoreSheetData();
+}
+function loadScoreSheetData() {
+    const thead = document.getElementById('score-table-head');
+    const tbody = document.getElementById('score-table-body');
+    const classSelect = document.getElementById('score-class-select');
+    const subjectSelect = document.getElementById('score-subject-select');
+    
+    if (!thead || !tbody || !classSelect) return;
+    const selectedClass = classSelect.value;
+    const isALevel = (selectedClass === 'S.5' || selectedClass === 'S.6');
+    
+    if (subjectSelect && subjectSelect.options.length === 0) {
+        updateSubjectDropdown();
+    }
+    
+    // Marks entry table/rows only appear once a subject is chosen and this
+    // is explicitly triggered (via "Load Subject" or "Next Subject").
+    const wrapper = document.getElementById('score-table-wrapper');
+    const emptyState = document.getElementById('score-table-empty-state');
+    const bulkBar = document.getElementById('bulk-initials-bar');
+    if (wrapper) wrapper.classList.remove('hidden');
+    if (emptyState) emptyState.classList.add('hidden');
+    if (bulkBar && getPermissions(currentUser.role).canManageScores) bulkBar.classList.remove('hidden');
+    // Prefill (only if still blank, so we never clobber something the teacher
+    // already typed this session) from the logged-in teacher's own saved
+    // initials — a convenience default, not a requirement; it can always be
+    // overwritten before clicking "Apply to All".
+    const bulkInput = document.getElementById('bulk-initials-input');
+    if (bulkInput && !bulkInput.value && currentUser.role === 'Teacher') {
+        const me = teachersList.find(t => t.username.toLowerCase() === currentUser.username.toLowerCase());
+        if (me && me.initials) bulkInput.value = me.initials;
+    }
+    
+    const selectedSubject = subjectSelect ? subjectSelect.value : (isALevel ? aLevelSubjects[0] : oLevelSubjects[0]);
+    const isSubsidiary = subsidiarySubjects.includes(selectedSubject.toUpperCase());
+    
+    tbody.innerHTML = "";
+    thead.innerHTML = isALevel ? buildALevelHeader() : buildOLevelHeader();
+    
+    const classStudents = studentsList.filter(s => s.class === selectedClass);
+    updateDashboardStats();
+    
+    if (classStudents.length === 0) {
+        const colSpan = isALevel ? 8 : 10;
+        tbody.innerHTML = `<tr><td colspan="${colSpan}" class="p-8 text-center text-slate-400 text-xs font-medium">No students registered in ${selectedClass} yet. Add them in the Students tab first.</td></tr>`;
+        return;
+    }
+    
+    // Same fix as loadStudentData(): assemble all rows first, write once.
+    const { term: viewedTerm, year: viewedYear } = getViewedTermYear();
+    tbody.innerHTML = classStudents.map(student => {
+        const recordKey = buildScoreRecordKey(selectedSubject, student.id, viewedTerm, viewedYear);
+        return isALevel ? buildALevelRow(student, recordKey, isSubsidiary) : buildOLevelRow(student, recordKey);
+    }).join('');
+    // Re-apply any existing search term so it stays in effect across a
+    // reload (e.g. clicking "Load Subject" or switching subjects while a
+    // search is active). Purely visual — does not touch marksStorage,
+    // inputs, or the save flow below.
+    filterScoreSheetTable();
+}
+// Real-time search: partial, case-insensitive match against Student ID or
+// Full Name. This only toggles row visibility on the table already built by
+// loadScoreSheetData() above — it never re-fetches or rebuilds row data, so
+// existing table loading, inputs, and save functionality are untouched.
+function filterScoreSheetTable() {
+    const searchInput = document.getElementById('score-search');
+    const tbody = document.getElementById('score-table-body');
+    if (!searchInput || !tbody) return;
+    const searchTerm = searchInput.value.trim().toLowerCase();
+    const rows = tbody.querySelectorAll('tr[data-student-id]');
+    let visibleCount = 0;
+    rows.forEach(row => {
+        const studId = (row.dataset.studentId || '').toLowerCase();
+        const studName = (row.dataset.studentName || '').toLowerCase();
+        const matches = !searchTerm || studId.includes(searchTerm) || studName.includes(searchTerm);
+        row.style.display = matches ? '' : 'none';
+        if (matches) visibleCount++;
+    });
+    let noMatchRow = document.getElementById('score-no-match-row');
+    if (searchTerm && visibleCount === 0 && rows.length > 0) {
+        if (!noMatchRow) {
+            const classSelect = document.getElementById('score-class-select');
+            const isALevel = classSelect && (classSelect.value === 'S.5' || classSelect.value === 'S.6');
+            noMatchRow = document.createElement('tr');
+            noMatchRow.id = 'score-no-match-row';
+            noMatchRow.innerHTML = `<td colspan="${isALevel ? 8 : 10}" class="p-6 text-center text-slate-400 text-xs font-medium">No students match "${escapeHTML(searchInput.value.trim())}".</td>`;
+            tbody.appendChild(noMatchRow);
+        } else {
+            noMatchRow.style.display = '';
+        }
+    } else if (noMatchRow) {
+        noMatchRow.style.display = 'none';
+    }
+}
+function buildALevelHeader() {
+    return `
+        <tr class="bg-slate-50 text-slate-500 uppercase text-[10px] font-extrabold tracking-wider border-b border-slate-200">
+            <th class="p-4 score-sticky-name-col">Student Name</th>
+            <th class="p-4 text-center">Paper 1 (100)</th>
+            <th class="p-4 text-center">Paper 2 (100)</th>
+            <th class="p-4 text-center">Average</th>
+            <th class="p-4 text-center">Grade</th>
+            <th class="p-4 text-center">Descriptor</th>
+            <th class="p-4 text-center">Points</th>
+            <th class="p-4">Remarks</th>
+        </tr>
+    `;
+}
+function buildOLevelHeader() {
+    return `
+        <tr class="bg-slate-50 text-slate-500 uppercase text-[10px] font-extrabold tracking-wider border-b border-slate-200">
+            <th class="p-4 score-sticky-name-col">Full Name</th>
+            <th class="p-4 text-center">AO1 (3.0)</th>
+            <th class="p-4 text-center">AO2 (3.0)</th>
+            <th class="p-4 text-center">Av. Score</th>
+            <th class="p-4 text-center">F.A (20)</th>
+            <th class="p-4 text-center">E.O.T (80)</th>
+            <th class="p-4 text-center">Final (100)</th>
+            <th class="p-4 text-center">Grade</th>
+            <th class="p-4 text-center">Descriptor</th>
+            <th class="p-4">TR's Initial</th>
+        </tr>
+    `;
+}
+function buildALevelRow(student, recordKey, isSubsidiary) {
+    // IMPORTANT: do NOT persist a default record just because this row was rendered.
+    // A subject must only be considered "recorded" once the teacher actually types a mark
+    // (see updateALevelMarks, which sets `touched: true`). Otherwise merely opening a
+    // subject in the dropdown would make it falsely appear on every student's report card.
+    const marks = marksStorage[recordKey] || { p1: null, p2: null };
+    const avgMark = computeALevelAvgMark(marks);
+    const gradeInfo = computeALevelGrade(avgMark, isSubsidiary);
+    
+    return `
+        <tr class="hover:bg-slate-50 transition${unsavedScoreRows.has(recordKey) ? ' score-save-error' : ''}" data-student-id="${student.id}" data-student-name="${escapeHTML(student.name)}">
+            <td class="p-4 font-bold text-slate-900 score-sticky-name-col">${student.name}</td>
+            <td class="p-4 text-center"><input type="number" min="0" max="100" step="1" value="${formatWholeScoreDisplay(marks.p1, '')}" placeholder="0" onchange="updateALevelMarks('${student.id}', 'p1', this.value, this)" class="w-16 p-1.5 text-center bg-slate-50 border border-slate-300 rounded-lg text-xs font-bold text-slate-800"></td>
+            <td class="p-4 text-center"><input type="number" min="0" max="100" step="1" value="${formatWholeScoreDisplay(marks.p2, '')}" placeholder="0" onchange="updateALevelMarks('${student.id}', 'p2', this.value, this)" class="w-16 p-1.5 text-center bg-slate-50 border border-slate-300 rounded-lg text-xs font-bold text-slate-800"></td>
+            <td id="total-${student.id}" class="p-4 text-center font-extrabold text-slate-800">${displayOrDash(avgMark, '')}</td>
+            <td id="grade-${student.id}" class="p-4 text-center font-extrabold text-teal-700">${displayOrDash(gradeInfo.grade, '')}</td>
+            <td id="descriptor-${student.id}" class="p-4 text-center text-xs font-bold text-slate-500">${displayOrDash(gradeInfo.descriptor, '')}</td>
+            <td id="points-${student.id}" class="p-4 text-center text-xs font-extrabold text-slate-500">${displayOrDash(gradeInfo.points, '')}</td>
+            <td class="p-4"><input type="text" value="${marks.remarks || ''}" placeholder="Teacher's remark" onchange="updateALevelRemarks('${student.id}', this.value)" class="w-40 p-1.5 bg-slate-50 border border-slate-300 rounded-lg text-xs font-semibold text-slate-700"></td>
+        </tr>
+    `;
+}
+function buildOLevelRow(student, recordKey) {
+    // Same principle as buildALevelRow: rendering a row must never write a phantom
+    // zero-mark record into storage. Only an actual teacher edit (updateMarks) does that.
+    const marks = marksStorage[recordKey] || { ao1: null, ao2: null, eot: null };
+    const avScore = calculateAOAverage(marks.ao1, marks.ao2).toFixed(1);
+    const faScore = ((avScore / 3.0) * 20).toFixed(1);
+    // Display-only: F.A (20) is shown as a whole number in the Marks Entry
+    // table. `faScore` itself stays a decimal string since it still feeds
+    // computeOLevelFinalTotal() below — only the rendered text is rounded.
+    const faScoreDisplay = Math.round(Number(faScore));
+    const finalTotal = computeOLevelFinalTotal(marks, faScore);
+    const gradeData = computeOfficialGrade(finalTotal);
+    
+    return `
+        <tr class="hover:bg-slate-50 transition${unsavedScoreRows.has(recordKey) ? ' score-save-error' : ''}" data-student-id="${student.id}" data-student-name="${escapeHTML(student.name)}">
+            <td class="p-4 font-bold text-slate-900 score-sticky-name-col">${student.name}</td>
+            <td class="p-4 text-center"><input type="number" step="0.1" min="0" max="3" value="${formatAOScoreDisplay(marks.ao1, '')}" placeholder="0" onchange="updateMarks('${student.id}', 'ao1', this.value, this)" class="w-16 p-1.5 text-center bg-slate-50 border border-slate-300 rounded-lg text-xs font-bold text-slate-800"></td>
+            <td class="p-4 text-center"><input type="number" step="0.1" min="0" max="3" value="${formatAOScoreDisplay(marks.ao2, '')}" placeholder="0" onchange="updateMarks('${student.id}', 'ao2', this.value, this)" class="w-16 p-1.5 text-center bg-slate-50 border border-slate-300 rounded-lg text-xs font-bold text-slate-800"></td>
+            <td id="av-${student.id}" class="p-4 text-center text-xs font-bold text-slate-500">${avScore}</td>
+            <td id="fa-${student.id}" class="p-4 text-center text-xs font-bold text-slate-500">${faScoreDisplay}</td>
+            <td class="p-4 text-center"><input type="number" min="0" max="80" value="${formatWholeScoreDisplay(marks.eot, '')}" placeholder="0" onchange="updateMarks('${student.id}', 'eot', this.value, this)" class="w-16 p-1.5 text-center bg-slate-50 border border-slate-300 rounded-lg text-xs font-bold text-slate-800"></td>
+            <td id="total-${student.id}" class="p-4 text-center font-extrabold text-slate-800">${displayOrDash(finalTotal, '')}</td>
+            <td id="grade-${student.id}" class="p-4 text-center font-extrabold text-teal-700">${displayOrDash(gradeData.grade, '')}</td>
+            <td id="descriptor-${student.id}" class="p-4 text-center text-xs font-bold text-slate-500">${displayOrDash(gradeData.descriptor, '')}</td>
+            <td class="p-4"><input type="text" maxlength="4" value="${marks.remarks || ''}" placeholder="" onchange="updateOLevelRemarks('${student.id}', this.value)" class="w-16 p-1.5 text-center bg-slate-50 border border-slate-300 rounded-lg text-xs font-bold uppercase text-slate-800"></td>
+        </tr>
+    `;
+}
+const O_LEVEL_FIELD_LIMITS = { ao1: [0, 3], ao2: [0, 3], eot: [0, 80] };
+// A cleared/deleted/blank input must become a true empty "no mark" state
+// ('') — NOT a numeric 0 (a 0 here used to silently become a real, wrong
+// contributor to averages/grades) and NOT null (which used to linger as a
+// stale value in state/DB instead of a clean empty state). Only an actual
+// invalid (non-numeric, non-blank) entry falls back to '' too, since
+// there's nothing valid to clamp. A real entered number is still clamped
+// to [min, max] as before.
+function clampValue(rawValue, min, max) {
+    if (rawValue === null || rawValue === undefined || rawValue === '') return '';
+    const val = Number(rawValue);
+    if (isNaN(val)) return '';
+    return Math.min(max, Math.max(min, val));
+}
+/* ---------------------------------------------------------
+   5b-i. UNGRADED-MARK HELPERS
+   A subject only has a real Final/Average score (and therefore a
+   real grade) once its required mark(s) have actually been entered.
+   These three helpers are the single source of truth for that:
+   no other code should re-derive "is this mark missing?" locally.
+   --------------------------------------------------------- */
+// Cosmetic-only: renders null/undefined as a dash instead of blank/0,
+// for any value that came out of the functions below.
+function displayOrDash(value, dash = '-') {
+    return (value === null || value === undefined) ? dash : value;
+}
+// A-Level: mirrors the pre-existing "only count papers actually
+// attempted" filter, but now yields null (no average yet) instead of
+// 0 when neither paper has been entered, so an ungraded subject is
+// never silently scored/graded as if it had a real 0.
+function computeALevelAvgMark(marks) {
+    const attemptedPapers = [Number(marks.p1), Number(marks.p2)].filter(p => p > 0);
+    return attemptedPapers.length > 0
+        ? Math.round(attemptedPapers.reduce((sum, p) => sum + p, 0) / attemptedPapers.length)
+        : null;
+}
+// O-Level: the Final/100 mark requires an actual E.O.T entry. If E.O.T
+// has been cleared/deleted or was never entered, there is no valid
+// Final mark yet — return null rather than treating the missing E.O.T
+// as 0 (which used to silently produce a real, wrong Final score).
+function computeOLevelFinalTotal(marks, faScore) {
+    if (marks.eot === null || marks.eot === undefined || marks.eot === '') return null;
+    return Math.round(Number(faScore) + Number(marks.eot));
+}
+/* ---------------------------------------------------------
+   5b. SCORE SAVE-STATUS TRACKING
+   ScoresAPI.save() used to be fired with `.catch(() => {})`, so a
+   rejected save (expired session, 403, 404 student-not-found,
+   network blip) was invisible: the UI already showed the typed
+   value optimistically, and the failed record just wasn't in the
+   database — so it vanished the moment the page reloaded and
+   marksStorage was rebuilt purely from GET /api/scores.
+   These helpers make that failure visible and stop a refresh from
+   silently discarding a mark that hasn't actually saved yet.
+   --------------------------------------------------------- */
+const unsavedScoreRows = new Set(); // recordKeys ("SUBJECT_studentId") with a pending or failed save
+let sessionExpiredNoticeShown = false;
+function showToast(message, type = 'error', duration = 7000) {
+    let container = document.getElementById('app-toast-container');
+    if (!container) {
+        container = document.createElement('div');
+        container.id = 'app-toast-container';
+        document.body.appendChild(container);
+    }
+    const toast = document.createElement('div');
+    toast.className = `app-toast app-toast-${type}`;
+    toast.textContent = message;
+    container.appendChild(toast);
+    requestAnimationFrame(() => toast.classList.add('visible'));
+    setTimeout(() => {
+        toast.classList.remove('visible');
+        setTimeout(() => toast.remove(), 300);
+    }, duration);
+}
+// recordKey is "SUBJECT_studentId"; the student id is always the segment
+// after the last underscore (mirrors the parsing ScoresAPI.save uses).
+function studentIdFromRecordKey(recordKey) {
+    return recordKey.split('_').pop();
+}
+function markRowSaveState(recordKey, ok) {
+    const studId = studentIdFromRecordKey(recordKey);
+    const row = document.querySelector(`tr[data-student-id="${CSS.escape(studId)}"]`);
+    if (ok) {
+        unsavedScoreRows.delete(recordKey);
+        if (row) { row.classList.remove('score-save-error'); row.removeAttribute('title'); }
+    } else {
+        unsavedScoreRows.add(recordKey);
+        if (row) { row.classList.add('score-save-error'); row.title = 'This row failed to save to the server. It will be lost if you refresh or close the tab before it saves successfully.'; }
+    }
+}
+let backendUnreachableNoticeShown = false;
+function handleScoreSaveError(err, recordKey) {
+    const studId = studentIdFromRecordKey(recordKey);
+    markRowSaveState(recordKey, false);
+    if (err && err.isNetworkFailure) {
+        // The backend itself couldn't be reached at all (not deployed, wrong
+        // API_CONFIG.BASE_URL, CORS not enabled for this origin, no internet).
+        // Every save will fail the same way until that's fixed, so warn once
+        // instead of once per keystroke.
+        if (!backendUnreachableNoticeShown) {
+            backendUnreachableNoticeShown = true;
+            showToast("Can't reach the school server at all. Marks are only staying in this browser tab and WILL be lost on refresh — check your internet connection, or ask whoever manages the system to confirm the backend is deployed and reachable.", 'error', 12000);
+        }
+        return;
+    }
+    if (err && err.status === 401) {
+        // Session is dead — every subsequent save will fail the same way,
+        // so warn once (not per keystroke) and offer to log back in rather
+        // than let the teacher keep typing marks that can never be saved.
+        if (!sessionExpiredNoticeShown) {
+            sessionExpiredNoticeShown = true;
+            showToast('Your session has expired. Marks entered from now on will NOT be saved until you log in again.', 'error', 10000);
+            setTimeout(() => {
+                if (confirm('Your session has expired, so new marks cannot be saved to the server. Log in again now? (Any unsaved rows are highlighted in red.)')) {
+                    handleLogout();
+                }
+            }, 200);
+        }
+        return;
+    }
+    if (err && err.status === 404) {
+        showToast(`Could not save marks for ${studId}: this student wasn't found on the server (they may only exist locally). Re-check them in the Students tab.`, 'error');
+        return;
+    }
+    if (err && err.status === 403) {
+        showToast(`Could not save marks for ${studId}: you don't have permission to edit scores.`, 'error');
+        return;
+    }
+    const detail = err && err.message ? ` (${err.message})` : '';
+    showToast(`Could not save marks for ${studId} to the server${detail}. It's highlighted in red and will be lost if you refresh before it saves.`, 'error');
+}
+// Re-attempts every currently-failed/pending save, across every subject —
+// not just whichever subject happens to be on screen right now. Used by
+// the "Save Marks Entry" button so it reports what's actually true instead
+// of an unconditional success message.
+async function retryUnsavedScores() {
+    const classLevel = document.getElementById('score-class-select')?.value;
+    const keysToRetry = Array.from(unsavedScoreRows);
+    await Promise.allSettled(keysToRetry.map(recordKey => {
+        const marks = marksStorage[recordKey];
+        if (!marks) { unsavedScoreRows.delete(recordKey); return Promise.resolve(); }
+        return ScoresAPI.save(recordKey, marks, classLevel)
+            .then(() => markRowSaveState(recordKey, true))
+            .catch(err => handleScoreSaveError(err, recordKey));
+    }));
+    return unsavedScoreRows.size;
+}
+// Handler for the "Save Marks Entry" button. Marks already save per-cell
+// as you type (see updateMarks etc.) — this button's only real job is to
+// report the truth about whether everything actually made it to the
+// server, and to give failed rows one more chance before you leave.
+async function saveMarksEntry(buttonEl) {
+    if (buttonEl) { buttonEl.disabled = true; buttonEl.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-1.5"></i>Checking...'; }
+    const remaining = await retryUnsavedScores();
+    if (buttonEl) { buttonEl.disabled = false; buttonEl.innerHTML = '<i class="fa-solid fa-floppy-disk mr-1.5"></i>Save Marks Entry'; }
+    if (remaining === 0) {
+        alert('Marks successfully saved to system register!');
+        hideScoreSheetTable(); // fully saved: collapse the table back to its default hidden state
+    } else {
+        alert(`${remaining} row(s) could NOT be saved to the server — they're highlighted in red. Check your connection/session and try again before leaving this page.`);
+    }
+    updateDashboardStats();
+}
+// or refresh while a save is still pending or has failed outright.
+window.addEventListener('beforeunload', (e) => {
+    if (unsavedScoreRows.size > 0) {
+        e.preventDefault();
+        e.returnValue = '';
+        return '';
+    }
+});
+function updateMarks(studId, type, value, inputEl) {
+    if (!getPermissions(currentUser.role).canManageScores) return; // RBAC guard
+    const subjectSelect = document.getElementById('score-subject-select');
+    const selectedSubject = subjectSelect ? subjectSelect.value : "GENERAL";
+    const termYear = getViewedTermYear();
+    const recordKey = buildScoreRecordKey(selectedSubject, studId, termYear.term, termYear.year);
+    if (!marksStorage[recordKey]) marksStorage[recordKey] = { ao1: null, ao2: null, eot: null };
+    const [min, max] = O_LEVEL_FIELD_LIMITS[type] || [0, 100];
+    const cleanValue = clampValue(value, min, max);
+    marksStorage[recordKey][type] = cleanValue;
+    marksStorage[recordKey].touched = true;
+    if (inputEl) inputEl.value = cleanValue;
+    
+    const marks = marksStorage[recordKey];
+    const avScore = calculateAOAverage(marks.ao1, marks.ao2).toFixed(1);
+    const faScore = ((avScore / 3.0) * 20).toFixed(1);
+    // Display-only: F.A (20) is shown as a whole number in the Marks Entry
+    // table. `faScore` itself stays a decimal string since it still feeds
+    // computeOLevelFinalTotal() below — only the rendered text is rounded.
+    const faScoreDisplay = Math.round(Number(faScore));
+    const finalTotal = computeOLevelFinalTotal(marks, faScore);
+    const gradeData = computeOfficialGrade(finalTotal);
+    
+    // Guard every cell individually: if the score sheet was re-rendered or
+    // the tab was switched away between the user's edit and this update
+    // (e.g. the class/subject dropdown changed mid-edit), these row cells
+    // may no longer be in the DOM. Without the null checks this used to
+    // throw "Cannot set properties of null (setting 'innerText')" and abort
+    // the rest of the function — which also skipped the save call below.
+    const avEl = document.getElementById(`av-${studId}`);
+    const faEl = document.getElementById(`fa-${studId}`);
+    const totalEl = document.getElementById(`total-${studId}`);
+    const gradeEl = document.getElementById(`grade-${studId}`);
+    const descriptorEl = document.getElementById(`descriptor-${studId}`);
+    if (avEl) avEl.innerText = avScore;
+    if (faEl) faEl.innerText = faScoreDisplay;
+    if (totalEl) totalEl.innerText = displayOrDash(finalTotal, '');
+    if (gradeEl) gradeEl.innerText = displayOrDash(gradeData.grade, '');
+    if (descriptorEl) descriptorEl.innerText = displayOrDash(gradeData.descriptor, '');
+    unsavedScoreRows.add(recordKey); // pending until the save below resolves — guards against a refresh mid-flight
+    ScoresAPI.save(recordKey, marks, document.getElementById('score-class-select')?.value, termYear)
+        .then(() => markRowSaveState(recordKey, true))
+        .catch(err => handleScoreSaveError(err, recordKey)); // UI already updated optimistically above; this surfaces real save failures instead of hiding them
+    updateDashboardStats();
+}
+function updateALevelMarks(studId, type, value, inputEl) {
+    if (!getPermissions(currentUser.role).canManageScores) return; // RBAC guard
+    const subjectSelect = document.getElementById('score-subject-select');
+    const selectedSubject = subjectSelect ? subjectSelect.value : "GENERAL";
+    const termYear = getViewedTermYear();
+    const recordKey = buildScoreRecordKey(selectedSubject, studId, termYear.term, termYear.year);
+    if (!marksStorage[recordKey]) marksStorage[recordKey] = { p1: null, p2: null };
+    // A-Level papers are whole-number marks only (e.g. 90, 98) — round any
+    // clamped value so decimals never enter storage/display for this table.
+    const clamped = clampValue(value, 0, 100);
+    const cleanValue = clamped === '' ? '' : Math.round(clamped);
+    marksStorage[recordKey][type] = cleanValue;
+    marksStorage[recordKey].touched = true;
+    if (inputEl) inputEl.value = cleanValue;
+    
+    const marks = marksStorage[recordKey];
+    const avgMark = computeALevelAvgMark(marks);
+    const isSubsidiary = subsidiarySubjects.includes(selectedSubject.toUpperCase());
+    const gradeInfo = computeALevelGrade(avgMark, isSubsidiary);
+    
+    // Same defensive guard as updateMarks() above — the row this cell
+    // belongs to may have been removed by a re-render before this runs.
+    const totalEl = document.getElementById(`total-${studId}`);
+    const gradeEl = document.getElementById(`grade-${studId}`);
+    const descriptorEl = document.getElementById(`descriptor-${studId}`);
+    const pointsEl = document.getElementById(`points-${studId}`);
+    if (totalEl) totalEl.innerText = displayOrDash(avgMark, '');
+    if (gradeEl) gradeEl.innerText = displayOrDash(gradeInfo.grade, '');
+    if (descriptorEl) descriptorEl.innerText = displayOrDash(gradeInfo.descriptor, '');
+    if (pointsEl) pointsEl.innerText = displayOrDash(gradeInfo.points, '');
+    unsavedScoreRows.add(recordKey); // pending until the save below resolves — guards against a refresh mid-flight
+    ScoresAPI.save(recordKey, marks, document.getElementById('score-class-select')?.value, termYear)
+        .then(() => markRowSaveState(recordKey, true))
+        .catch(err => handleScoreSaveError(err, recordKey)); // UI already updated optimistically above; this surfaces real save failures instead of hiding them
+    updateDashboardStats();
+}
+function updateOLevelRemarks(studId, value) {
+    if (!getPermissions(currentUser.role).canManageScores) return; // RBAC guard
+    const subjectSelect = document.getElementById('score-subject-select');
+    const selectedSubject = subjectSelect ? subjectSelect.value : "GENERAL";
+    const termYear = getViewedTermYear();
+    const recordKey = buildScoreRecordKey(selectedSubject, studId, termYear.term, termYear.year);
+    if (!marksStorage[recordKey]) marksStorage[recordKey] = { ao1: null, ao2: null, eot: null };
+    marksStorage[recordKey].remarks = value.trim();
+    if (marksStorage[recordKey].remarks !== '') marksStorage[recordKey].touched = true;
+    unsavedScoreRows.add(recordKey);
+    ScoresAPI.save(recordKey, marksStorage[recordKey], document.getElementById('score-class-select')?.value, termYear)
+        .then(() => markRowSaveState(recordKey, true))
+        .catch(err => handleScoreSaveError(err, recordKey));
+}
+function updateALevelRemarks(studId, value) {
+    if (!getPermissions(currentUser.role).canManageScores) return; // RBAC guard
+    const subjectSelect = document.getElementById('score-subject-select');
+    const selectedSubject = subjectSelect ? subjectSelect.value : "GENERAL";
+    const termYear = getViewedTermYear();
+    const recordKey = buildScoreRecordKey(selectedSubject, studId, termYear.term, termYear.year);
+    if (!marksStorage[recordKey]) marksStorage[recordKey] = { p1: null, p2: null };
+    marksStorage[recordKey].remarks = value.trim();
+    if (marksStorage[recordKey].remarks !== '') marksStorage[recordKey].touched = true;
+    unsavedScoreRows.add(recordKey);
+    ScoresAPI.save(recordKey, marksStorage[recordKey], document.getElementById('score-class-select')?.value, termYear)
+        .then(() => markRowSaveState(recordKey, true))
+        .catch(err => handleScoreSaveError(err, recordKey));
+}
+// Stamps one initials value onto every row currently loaded for the selected
+// class+subject, in a single request, instead of a teacher clicking into
+// each student's "TR's Initial" cell one by one.
+async function applyBulkInitials() {
+    if (!getPermissions(currentUser.role).canManageScores) return; // RBAC guard
+    const classLevel = document.getElementById('score-class-select')?.value;
+    const subjectSelect = document.getElementById('score-subject-select');
+    const subject = subjectSelect ? subjectSelect.value : null;
+    const input = document.getElementById('bulk-initials-input');
+    const initials = (input?.value || '').trim().toUpperCase().slice(0, 4);
+
+    if (!classLevel || !subject) return;
+    if (!initials) {
+        alert('Enter an initial before applying it to the class.');
+        return;
+    }
+
+    let result;
+    try {
+        result = await ScoresAPI.applyBulkInitials(classLevel, subject, initials);
+    } catch (err) {
+        showToast(err.message || "Couldn't apply initials to the class. Please try again.", 'error');
+        return;
+    }
+
+    const updated = result?.updated || [];
+    if (input) input.value = initials;
+
+    // Only rows the server actually updated get touched here — students with
+    // no scores row yet for this subject are intentionally left alone (see
+    // the bulk-initials endpoint's comments) rather than guessed at locally.
+    updated.forEach(({ recordKey }) => {
+        if (marksStorage[recordKey]) marksStorage[recordKey].remarks = initials;
+        const studId = studentIdFromRecordKey(recordKey);
+        const row = document.querySelector(`tr[data-student-id="${CSS.escape(studId)}"]`);
+        const remarkInput = row ? row.querySelector('td:last-child input[type="text"]') : null;
+        if (remarkInput) remarkInput.value = initials;
+        markRowSaveState(recordKey, true);
+    });
+
+    const classStudentCount = studentsList.filter(s => s.class === classLevel).length;
+    const skipped = classStudentCount - updated.length;
+    showToast(
+        skipped > 0
+            ? `Applied "${initials}" to ${updated.length} student${updated.length === 1 ? '' : 's'}. ${skipped} student${skipped === 1 ? '' : 's'} have no marks recorded for ${subject} yet, so ${skipped === 1 ? 'it was' : 'they were'} skipped.`
+            : `Applied "${initials}" to all ${updated.length} student${updated.length === 1 ? '' : 's'} in ${classLevel} for ${subject}.`,
+        'success'
+    );
+    updateDashboardStats();
+}
+/* ---------------------------------------------------------
+   6. GRADING LOGIC
+   --------------------------------------------------------- */
+function computeOfficialGrade(score) {
+    // No valid Final mark yet (E.O.T missing/cleared) — ungraded, not an 'E'.
+    if (score === null || score === undefined) return { grade: null, descriptor: null };
+    if (score >= 75) return { grade: 'A', descriptor: 'EXCEPTIONAL' };
+    if (score >= 65) return { grade: 'B', descriptor: 'OUTSTANDING' };
+    if (score >= 55) return { grade: 'C', descriptor: 'SATISFACTORY' };
+    if (score >= 45) return { grade: 'D', descriptor: 'BASIC' };
+    return { grade: 'E', descriptor: 'ELEMENTARY' };
+}
+function computeALevelGrade(score, isSubsidiary) {
+    // No paper attempted yet — ungraded, not an 'E'.
+    if (score === null || score === undefined) return { grade: null, descriptor: null, points: null };
+    let grade, descriptor, points;
+    if (score >= 80) { grade = "A"; descriptor = "EXCEPTIONAL"; points = isSubsidiary ? 1 : 5; }
+    else if (score >= 70) { grade = "B"; descriptor = "OUTSTANDING"; points = isSubsidiary ? 1 : 4; }
+    else if (score >= 60) { grade = "C"; descriptor = "SATISFACTORY"; points = isSubsidiary ? 1 : 3; }
+    else if (score >= 50) { grade = "D"; descriptor = "BASIC"; points = isSubsidiary ? 1 : 2; }
+    else { grade = "E"; descriptor = "ELEMENTARY"; points = isSubsidiary ? 0 : 1; }
+    return { grade, descriptor, points };
+}
+/* ---------------------------------------------------------
+   6b. REPORT CARD ENGINE (A-Level)
+   --------------------------------------------------------- */
+function renderReportsModule() {
+    // Students keep the "My Report Card" nav tab (see renderSidebarNav),
+    // but per current policy they are not permitted to view report card
+    // content directly through the portal. Show a restriction notice
+    // instead of the actual report (renderOwnReportModule) — admin and
+    // teacher access below is completely untouched.
+    if (currentUser.role === 'Student') return renderStudentReportRestrictedModule();
+    // Pull defaults from the persisted term settings (not a fresh blank state)
+    // so the upcoming term dates the school already set are always shown,
+    // even after switching tabs or regenerating report cards.
+    const t = termSettings;
+    const canEditTerm = getPermissions(currentUser.role).canManageTerm;
+    const termLock = canEditTerm ? '' : 'disabled';
+    // Bulk "Print / Save PDF (Whole Class)" is Administrator-only — RBAC guard.
+    const canPrintWholeClass = getPermissions(currentUser.role).canPrintWholeClass;
+    return `
+        <div class="space-y-6">
+            <div class="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs">
+                ${!canEditTerm ? `<p class="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-3">Academic calendar dates are managed by the Administrator &middot; view only</p>` : ''}
+                <div class="flex flex-wrap items-end gap-4">
+                    <div>
+                        <label class="block text-[11px] font-extrabold text-slate-500 uppercase tracking-wider mb-1">Class Level</label>
+                        <select id="report-class-select" class="p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-extrabold text-slate-700">
+                            <optgroup label="O-Level (S.1 - S.4)">
+                                <option value="S.1">S.1</option>
+                                <option value="S.2">S.2</option>
+                                <option value="S.3">S.3</option>
+                                <option value="S.4">S.4</option>
+                            </optgroup>
+                            <optgroup label="A-Level (S.5 - S.6)">
+                                <option value="S.5" selected>S.5</option>
+                                <option value="S.6">S.6</option>
+                            </optgroup>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-extrabold text-slate-500 uppercase tracking-wider mb-1">Term</label>
+                        <select id="report-term-select" ${termLock} onchange="updateTermSetting('term', this.value)" class="p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-700">
+                            <option value="Term 1" ${t.term === 'Term 1' ? 'selected' : ''}>Term 1</option>
+                            <option value="Term 2" ${t.term === 'Term 2' ? 'selected' : ''}>Term 2</option>
+                            <option value="Term 3" ${t.term === 'Term 3' ? 'selected' : ''}>Term 3</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-extrabold text-slate-500 uppercase tracking-wider mb-1">Year</label>
+                        <input type="number" id="report-year-input" ${termLock} value="${t.year}" onchange="updateTermSetting('year', this.value)" class="w-24 p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-700">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-extrabold text-slate-500 uppercase tracking-wider mb-1">Next Term Begins</label>
+                        <input type="date" id="report-next-begins" ${termLock} value="${t.nextBegins}" onchange="updateTermSetting('nextBegins', this.value)" class="p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-700">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-extrabold text-slate-500 uppercase tracking-wider mb-1">Ends On</label>
+                        <input type="date" id="report-next-ends" ${termLock} value="${t.nextEnds}" onchange="updateTermSetting('nextEnds', this.value)" class="p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-700">
+                    </div>
+                    <div class="flex gap-2 ml-auto">
+                        <button onclick="toggleGradingLegendPreview()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 text-xs font-extrabold uppercase tracking-wider py-2.5 px-4 rounded-xl transition"><i class="fa-solid fa-table-list mr-1.5"></i>Grading Scale</button>
+                        <button onclick="generateReportCards()" class="btn-neu-light text-xs font-extrabold uppercase tracking-wider py-2.5 px-4 rounded-xl transition shadow-xs"><i class="fa-solid fa-file-circle-plus mr-1.5"></i>Generate Report Cards</button>
+                        ${canPrintWholeClass ? `<button onclick="printReportCards()" style="background:var(--navy-900);" class="hover:opacity-90 text-white text-xs font-extrabold uppercase tracking-wider py-2.5 px-4 rounded-xl transition shadow-xs"><i class="fa-solid fa-print mr-1.5"></i>Print / Save PDF (Whole Class)</button>` : ''}
+                    </div>
+                </div>
+                <div id="grading-legend-preview" class="hidden mt-4 pt-4 border-t border-slate-200"></div>
+            </div>
+            <div id="report-cards-preview" class="space-y-4"></div>
+        </div>
+    `;
+}
+// Read-only preview of the grading scale used on every report card — lets
+// an admin/teacher check the scale up front without generating a full
+// class of report cards first. Mirrors (does not recompute) the thresholds
+// already used by computeOfficialGrade() and computeALevelGrade().
+function toggleGradingLegendPreview() {
+    const panel = document.getElementById('grading-legend-preview');
+    if (!panel) return;
+    const isHidden = panel.classList.contains('hidden');
+    if (isHidden) {
+        panel.innerHTML = `
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <h4 class="text-[11px] font-extrabold text-slate-500 uppercase tracking-wider mb-2">O-Level Grading Scale (S.1&ndash;S.4)</h4>
+                    <table class="w-full text-xs border border-slate-200 rounded-lg overflow-hidden">
+                        <thead><tr class="bg-slate-50 text-slate-500 uppercase text-[10px] font-extrabold"><th class="p-2 text-left">Score</th><th class="p-2 text-left">Grade</th><th class="p-2 text-left">Descriptor</th></tr></thead>
+                        <tbody class="divide-y divide-slate-100">
+                            <tr><td class="p-2">75&ndash;100</td><td class="p-2 font-bold">A</td><td class="p-2">Exceptional</td></tr>
+                            <tr><td class="p-2">65&ndash;74</td><td class="p-2 font-bold">B</td><td class="p-2">Outstanding</td></tr>
+                            <tr><td class="p-2">55&ndash;64</td><td class="p-2 font-bold">C</td><td class="p-2">Satisfactory</td></tr>
+                            <tr><td class="p-2">45&ndash;54</td><td class="p-2 font-bold">D</td><td class="p-2">Basic</td></tr>
+                            <tr><td class="p-2">0&ndash;44</td><td class="p-2 font-bold">E</td><td class="p-2">Elementary</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div>
+                    <h4 class="text-[11px] font-extrabold text-slate-500 uppercase tracking-wider mb-2">A-Level Grading Scale (S.5&ndash;S.6)</h4>
+                    <table class="w-full text-xs border border-slate-200 rounded-lg overflow-hidden">
+                        <thead><tr class="bg-slate-50 text-slate-500 uppercase text-[10px] font-extrabold"><th class="p-2 text-left">Score</th><th class="p-2 text-left">Grade</th><th class="p-2 text-left">Principal Pts</th><th class="p-2 text-left">Subsidiary Pts</th></tr></thead>
+                        <tbody class="divide-y divide-slate-100">
+                            <tr><td class="p-2">80+</td><td class="p-2 font-bold">A</td><td class="p-2">5</td><td class="p-2">1</td></tr>
+                            <tr><td class="p-2">70&ndash;79</td><td class="p-2 font-bold">B</td><td class="p-2">4</td><td class="p-2">1</td></tr>
+                            <tr><td class="p-2">60&ndash;69</td><td class="p-2 font-bold">C</td><td class="p-2">3</td><td class="p-2">1</td></tr>
+                            <tr><td class="p-2">50&ndash;59</td><td class="p-2 font-bold">D</td><td class="p-2">2</td><td class="p-2">1</td></tr>
+                            <tr><td class="p-2">0&ndash;49</td><td class="p-2 font-bold">E</td><td class="p-2">1</td><td class="p-2">0</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        `;
+    }
+    panel.classList.toggle('hidden');
+}
+function updateTermSetting(key, value) {
+    if (!getPermissions(currentUser.role).canManageTerm) return; // RBAC guard: Administrator only
+    termSettings[key] = value;
+    TermAPI.save(termSettings).catch(() => {});
+}
+/* ---------------------------------------------------------
+   3c. STUDENT SELF-SERVICE DASHBOARD SUMMARY
+   A Student's Dashboard tab is their personal summary view —
+   attendance, absences, subjects recorded, performance summary,
+   and system summary — reusing the exact same rendering logic
+   (renderStudentProfileBody) as the modal popup an Administrator/
+   Teacher sees when they click "View" on a student record, just
+   auto-loaded for the logged-in student's own record and printed
+   inline on the page instead of in a modal. No new calculations,
+   storage keys, or API endpoints are introduced.
+   --------------------------------------------------------- */
+function renderOwnDashboardModule() {
+    const student = studentsList.find(s => s.id.toLowerCase() === (currentUser.studentId || currentUser.username).toLowerCase());
+    if (!student) {
+        return `<div class="bg-white border border-slate-200 rounded-2xl p-10 text-center text-slate-400 text-sm font-semibold">
+            No student record is linked to the username "${currentUser.username}". Ask your Administrator to check your account.
+        </div>`;
+    }
+    return `
+        <div class="space-y-6">
+            <div class="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs flex items-center gap-3">
+                <div class="w-12 h-12 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center overflow-hidden flex-shrink-0">
+                    ${student.photoUrl
+                        ? `<img src="${escapeHTML(student.photoUrl)}" class="w-full h-full object-cover" alt="${escapeHTML(student.name)}">`
+                        : `<i class="fa-solid fa-user text-slate-300 text-lg"></i>`}
+                </div>
+                <div>
+                    <h3 class="text-sm font-extrabold text-slate-900">${escapeHTML(student.name)}</h3>
+                    <p class="text-[11px] font-bold text-slate-500 uppercase tracking-wider">${escapeHTML(student.id)} &middot; ${escapeHTML(student.class)} &middot; ${escapeHTML(student.gender)}</p>
+                </div>
+            </div>
+            <div class="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs">
+                <h4 class="text-[11px] font-extrabold text-slate-500 uppercase tracking-wider mb-3"><i class="fa-solid fa-sack-dollar mr-1.5 text-emerald-600"></i>My Fees Balance</h4>
+                <div id="my-fees-balance-card" class="text-center text-slate-400 text-xs font-semibold py-8">
+                    <i class="fa-solid fa-spinner fa-spin mr-1.5"></i>Loading your fee balance&hellip;
+                </div>
+            </div>
+            <div class="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs">
+                <h4 class="text-[11px] font-extrabold text-slate-500 uppercase tracking-wider mb-3"><i class="fa-solid fa-chart-line mr-1.5 text-teal-600"></i>My Performance Trend</h4>
+                <div class="relative h-72">
+                    <canvas id="my-performance-trend-chart" class="hidden"></canvas>
+                    <div id="my-performance-trend-empty" class="hidden absolute inset-0 flex items-center justify-center text-center text-slate-400 text-xs font-semibold px-6"></div>
+                    <div id="my-performance-trend-loading" class="absolute inset-0 flex items-center justify-center text-center text-slate-400 text-xs font-semibold">
+                        <i class="fa-solid fa-spinner fa-spin mr-1.5"></i>Loading your term-by-term averages&hellip;
+                    </div>
+                </div>
+            </div>
+            <div class="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs">
+                <h4 class="text-[11px] font-extrabold text-slate-500 uppercase tracking-wider mb-3"><i class="fa-solid fa-trophy mr-1.5 text-amber-500"></i>My Achievements</h4>
+                <div id="my-achievements-panel" class="text-center text-slate-400 text-xs font-semibold py-10">
+                    <i class="fa-solid fa-spinner fa-spin mr-1.5"></i>Loading achievements&hellip;
+                </div>
+            </div>
+            <div id="own-dashboard-summary-body" class="space-y-5 text-center text-slate-400 text-xs font-semibold py-10">
+                <i class="fa-solid fa-spinner fa-spin mr-1.5"></i>Loading attendance &amp; performance summary&hellip;
+            </div>
+        </div>
+    `;
+}
+// Fetches this student's full attendance history (same on-demand call the
+// admin/teacher profile modal and report card engine already use) plus
+// their term-by-term score trend, in parallel, then renders all three
+// dashboard pieces (profile summary, trend chart, achievements) into
+// their own container ids. Each render function independently guards on
+// its container still being present (`if (!el) return;`), same pattern
+// as renderStudentProfileBody, in case the student navigates away from
+// Dashboard while these are still loading.
+async function initOwnDashboardModule() {
+    const student = studentsList.find(s => s.id.toLowerCase() === (currentUser.studentId || currentUser.username).toLowerCase());
+    if (!student) return;
+    const [, trend, feesBalance] = await Promise.all([
+        refreshAttendanceForStudent(student.id),
+        ScoresAPI.trend(),
+        StudentFinanceAPI.getMyBalance()
+    ]);
+    renderStudentProfileBody(student, 'own-dashboard-summary-body');
+    renderMyPerformanceTrendChart(trend);
+    renderMyAchievementsPanel(student, trend);
+    renderMyFeesBalanceCard(feesBalance);
+}
+/* ---------------------------------------------------------
+   3c-0. MY FEES BALANCE
+   Backed by GET /api/student-finance/my-balance (Student-only,
+   always scoped server-side to req.user.studentId — see
+   student-finance.routes.js). feesBalance is null on a network
+   failure (StudentFinanceAPI.getMyBalance()'s remoteFirst fallback),
+   in which case this just shows a quiet "couldn't load" message
+   rather than a scary error block.
+   --------------------------------------------------------- */
+function renderMyFeesBalanceCard(feesBalance) {
+    const el = document.getElementById('my-fees-balance-card');
+    if (!el) return; // navigated away from Dashboard while this was loading
+
+    if (!feesBalance) {
+        el.innerHTML = `<p class="text-slate-400 text-xs font-semibold">Couldn't load your fee balance right now — please try again shortly.</p>`;
+        return;
+    }
+
+    const { term, year, billed, paid, balance } = feesBalance;
+    const isCleared = balance <= 0;
+
+    el.innerHTML = `
+        <p class="text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-3 text-center">${escapeHTML(term)} ${escapeHTML(String(year))}</p>
+        <div class="grid grid-cols-2 gap-3 mb-3">
+            <div class="bg-slate-50 rounded-xl p-3 text-center">
+                <p class="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider mb-1">Billed</p>
+                <p class="text-sm font-extrabold text-slate-700">${formatUGX(billed)}</p>
+            </div>
+            <div class="bg-slate-50 rounded-xl p-3 text-center">
+                <p class="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider mb-1">Paid</p>
+                <p class="text-sm font-extrabold text-slate-700">${formatUGX(paid)}</p>
+            </div>
+        </div>
+        <div class="rounded-xl p-3 text-center border-t-2 ${isCleared ? 'border-emerald-500 bg-emerald-50' : 'border-rose-500 bg-rose-50'}">
+            <p class="text-[10px] font-extrabold uppercase tracking-wider mb-1 ${isCleared ? 'text-emerald-600' : 'text-rose-600'}">Balance Due</p>
+            <p class="text-lg font-extrabold ${isCleared ? 'text-emerald-700' : 'text-rose-700'}">${isCleared ? 'Fully Paid' : formatUGX(balance)}</p>
+        </div>
+    `;
+}
+/* ---------------------------------------------------------
+   3c-i. PERSONAL PERFORMANCE TREND CHART
+   Line chart of this student's own term-by-term average score,
+   backed by GET /api/scores/trend (Student-only, always scoped
+   server-side to req.user.studentId — see scores.routes.js).
+   Terms with no valid mark yet come back with average: null and
+   are skipped here, so the line only ever connects real data
+   points instead of dipping to a misleading 0.
+   --------------------------------------------------------- */
+function renderMyPerformanceTrendChart(trend) {
+    const canvas = document.getElementById('my-performance-trend-chart');
+    if (!canvas) return; // navigated away from Dashboard while this was loading
+    const emptyState = document.getElementById('my-performance-trend-empty');
+    const loading = document.getElementById('my-performance-trend-loading');
+    if (loading) loading.classList.add('hidden');
+
+    if (myPerformanceTrendChartInstance) {
+        myPerformanceTrendChartInstance.destroy();
+        myPerformanceTrendChartInstance = null;
+    }
+
+    const points = (trend || []).filter(t => t.average !== null);
+    if (points.length === 0) {
+        canvas.classList.add('hidden');
+        if (emptyState) {
+            emptyState.classList.remove('hidden');
+            emptyState.textContent = trend === null
+                ? "Couldn't load your performance trend right now — please try again shortly."
+                : 'Your term-by-term trend will appear here once scores are recorded.';
+        }
+        return;
+    }
+    canvas.classList.remove('hidden');
+    if (emptyState) emptyState.classList.add('hidden');
+
+    myPerformanceTrendChartInstance = new Chart(canvas, {
+        type: 'line',
+        data: {
+            labels: points.map(p => p.label),
+            datasets: [{
+                label: 'My Average Score',
+                data: points.map(p => p.average),
+                borderColor: 'rgba(29, 78, 216, 1)',
+                backgroundColor: 'rgba(37, 99, 235, 0.15)',
+                borderWidth: 2,
+                pointBackgroundColor: 'rgba(29, 78, 216, 1)',
+                pointRadius: 4,
+                pointHoverRadius: 6,
+                tension: 0.3,
+                fill: true
+            }]
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+                y: { beginAtZero: true, max: 100, ticks: { font: { weight: 'bold' } } },
+                x: { ticks: { font: { weight: 'bold' } } }
+            }
+        }
+    });
+}
+/* ---------------------------------------------------------
+   3c-ii. "MY ACHIEVEMENTS" PANEL
+   Highlights positive signals only (score improvement, attendance
+   consistency, strongest subject, subjects on track) — never a
+   ranking against other students. Every input already comes from
+   data the backend scopes exclusively to the logged-in student:
+   subjectRecords via getOLevelSubjectRecords/getALevelSubjectRecords
+   (built from marksStorage, itself hydrated from GET /api/scores,
+   which forces student_id = req.user.studentId for the Student
+   role — see scores.routes.js), attendance via getAttendanceSummary
+   (built from attendanceStorage, same Student-role scoping in
+   attendance.routes.js), and trend via GET /api/scores/trend
+   (Student-only, same scoping). No client-side call here ever
+   passes another student's id.
+   --------------------------------------------------------- */
+function computeStudentAchievements(subjectRecords, isALevel, attendance, trend) {
+    const achievements = [];
+
+    // Score improvement: compare the two most recent terms that actually
+    // have a computed average (skips gaps from ungraded terms).
+    const gradedPoints = (trend || []).filter(t => t.average !== null);
+    if (gradedPoints.length >= 2) {
+        const last = gradedPoints[gradedPoints.length - 1];
+        const prev = gradedPoints[gradedPoints.length - 2];
+        const delta = last.average - prev.average;
+        if (delta > 0) {
+            achievements.push({
+                icon: 'fa-arrow-trend-up', color: 'emerald', title: 'Score Improvement',
+                description: `Your average rose from ${prev.average.toFixed(1)} (${prev.label}) to ${last.average.toFixed(1)} (${last.label}) — up ${delta.toFixed(1)} points.`
+            });
+        }
+    }
+
+    // Attendance consistency, for the term currently being viewed.
+    if (attendance.total > 0 && attendance.absent === 0) {
+        achievements.push({
+            icon: 'fa-calendar-check', color: 'teal', title: 'Perfect Attendance',
+            description: `No recorded absences this term across ${attendance.total} day${attendance.total === 1 ? '' : 's'} tracked.`
+        });
+    } else if (attendance.total > 0 && attendance.pct >= 90) {
+        achievements.push({
+            icon: 'fa-calendar-check', color: 'teal', title: 'Strong Attendance',
+            description: `${attendance.pct}% attendance this term (${attendance.present}/${attendance.total} days present).`
+        });
+    }
+
+    // Strongest subject this term, by whichever score type this level uses.
+    if (subjectRecords.length > 0) {
+        let best = null, bestScore = null;
+        subjectRecords.forEach(r => {
+            const score = isALevel ? r.avgMark : r.finalTotal;
+            if (score !== null && (bestScore === null || score > bestScore)) { best = r; bestScore = score; }
+        });
+        if (best) {
+            const bestGrade = isALevel ? best.gradeInfo.grade : best.gradeData.grade;
+            achievements.push({
+                icon: 'fa-star', color: 'amber', title: 'Strongest Subject',
+                description: `${best.subj} is your top-performing subject this term — ${bestScore}${isALevel ? '' : '/100'} (Grade ${bestGrade}).`
+            });
+        }
+    }
+
+    // Subjects graded A or B this term.
+    const strongSubjects = subjectRecords.filter(r => ['A', 'B'].includes(isALevel ? r.gradeInfo.grade : r.gradeData.grade));
+    if (strongSubjects.length > 0) {
+        achievements.push({
+            icon: 'fa-medal', color: 'blue', title: 'Subjects On Track',
+            description: `${strongSubjects.length} subject${strongSubjects.length === 1 ? '' : 's'} graded A or B this term: ${strongSubjects.map(r => r.subj).join(', ')}.`
+        });
+    }
+
+    return achievements;
+}
+const ACHIEVEMENT_COLOR_CLASSES = {
+    emerald: 'bg-emerald-50 border-emerald-200 text-emerald-700',
+    teal: 'bg-teal-50 border-teal-200 text-teal-700',
+    amber: 'bg-amber-50 border-amber-200 text-amber-700',
+    blue: 'bg-blue-50 border-blue-200 text-blue-700'
+};
+function renderMyAchievementsPanel(student, trend) {
+    const container = document.getElementById('my-achievements-panel');
+    if (!container) return; // navigated away from Dashboard while this was loading
+
+    const isALevel = (student.class === 'S.5' || student.class === 'S.6');
+    const subjectRecords = isALevel ? getALevelSubjectRecords(student) : getOLevelSubjectRecords(student);
+    const attendance = getAttendanceSummary(student);
+    const achievements = computeStudentAchievements(subjectRecords, isALevel, attendance, trend);
+
+    if (achievements.length === 0) {
+        container.innerHTML = `<div class="text-center text-slate-400 text-xs font-semibold py-8">
+            <i class="fa-solid fa-seedling mr-1.5"></i>Your achievements will show up here as scores and attendance are recorded.
+        </div>`;
+        return;
+    }
+
+    container.innerHTML = `<div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        ${achievements.map(a => `
+            <div class="border rounded-xl p-4 flex items-start gap-3 ${ACHIEVEMENT_COLOR_CLASSES[a.color] || ACHIEVEMENT_COLOR_CLASSES.teal}">
+                <div class="w-9 h-9 rounded-xl bg-white flex items-center justify-center text-sm shrink-0 shadow-xs"><i class="fa-solid ${a.icon}"></i></div>
+                <div class="min-w-0">
+                    <p class="text-xs font-extrabold uppercase tracking-wider">${escapeHTML(a.title)}</p>
+                    <p class="text-[11px] font-semibold mt-0.5 opacity-90">${escapeHTML(a.description)}</p>
+                </div>
+            </div>
+        `).join('')}
+    </div>`;
+}
+/* ---------------------------------------------------------
+   6a2. STUDENT SELF-SERVICE REPORT VIEW
+   A Student's Reports tab is locked to their own record only —
+   no class picker, no access to any other learner's data.
+   --------------------------------------------------------- */
+// STUDENT-ONLY ACCESS RESTRICTION: the "My Report Card" tab stays visible
+// in the student sidebar (renderSidebarNav / switchTab already list it for
+// the Student role), but clicking it now shows this notice instead of the
+// actual report. This does not affect Admin/Teacher, who still go through
+// the normal branch below in renderReportsModule, and it does not touch
+// the Student's Dashboard or Learning Resources tabs/logic in any way.
+function renderStudentReportRestrictedModule() {
+    return `
+        <div class="bg-white border border-slate-200 rounded-2xl p-10 text-center">
+            <div class="w-14 h-14 mx-auto rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center text-2xl mb-4"><i class="fa-solid fa-lock"></i></div>
+            <p class="text-sm font-bold text-slate-600 max-w-lg mx-auto leading-relaxed">Access Restricted: Your current student login does not guarantee permissions to view report cards directly through the portal. Please contact your administrator or class teacher for assistance.</p>
+        </div>
+    `;
+}
+function renderOwnReportModule() {
+    const student = studentsList.find(s => s.id.toLowerCase() === (currentUser.studentId || currentUser.username).toLowerCase());
+    if (!student) {
+        return `<div class="bg-white border border-slate-200 rounded-2xl p-10 text-center text-slate-400 text-sm font-semibold">
+            No student record is linked to the username "${currentUser.username}". Ask your Administrator to check your account.
+        </div>`;
+    }
+    const isALevel = (student.class === 'S.5' || student.class === 'S.6');
+    const t = termSettings;
+    const page = isALevel
+        ? buildALevelReportPage(student, t.term, t.year, t.nextBegins, t.nextEnds, false)
+        : buildOLevelReportPage(student, t.term, t.year, t.nextBegins, t.nextEnds, false);
+    return `
+        <div class="space-y-6">
+            <div class="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                <p class="text-xs font-semibold text-slate-500">Showing <span class="font-extrabold text-slate-700">${t.term}, ${t.year}</span> for ${escapeHTML(student.name)} (${escapeHTML(student.id)}). Only you can view this report.</p>
+                <button onclick="printOwnReportCard()" style="background:var(--navy-900);" class="hover:opacity-90 text-white text-xs font-extrabold uppercase tracking-wider py-2.5 px-4 rounded-xl transition shadow-xs"><i class="fa-solid fa-print mr-1.5"></i>Print / Save PDF</button>
+            </div>
+            <div id="own-report-preview">${page}</div>
+        </div>
+    `;
+}
+function printOwnReportCard() {
+    const previewArea = document.getElementById('own-report-preview');
+    const printArea = document.getElementById('print-area');
+    if (!previewArea || !printArea) return;
+    printArea.innerHTML = previewArea.innerHTML;
+    window.print();
+}
+async function generateReportCards() {
+    if (!getPermissions(currentUser.role).canViewAllReports) return; // RBAC guard
+    const classSelect = document.getElementById('report-class-select');
+    const termSelect = document.getElementById('report-term-select');
+    const yearInput = document.getElementById('report-year-input');
+    const beginsInput = document.getElementById('report-next-begins');
+    const endsInput = document.getElementById('report-next-ends');
+    const previewArea = document.getElementById('report-cards-preview');
+    if (!classSelect || !previewArea) return;
+
+    const selectedClass = classSelect.value;
+    const isALevel = (selectedClass === 'S.5' || selectedClass === 'S.6');
+    const term = termSelect ? termSelect.value : termSettings.term;
+    const year = yearInput ? yearInput.value : termSettings.year;
+    const nextBegins = beginsInput ? beginsInput.value : termSettings.nextBegins;
+    const nextEnds = endsInput ? endsInput.value : termSettings.nextEnds;
+
+    // Keep the persisted term settings in sync with whatever is on screen,
+    // so these values are correctly pulled into the report card even if the
+    // Reports tab was re-rendered (e.g. via printReportCards) since they were set.
+    termSettings = { term, year, nextBegins, nextEnds };
+
+    const classStudents = studentsList.filter(s => s.class === selectedClass);
+    if (classStudents.length === 0) {
+        previewArea.innerHTML = `<div class="bg-white border border-slate-200 rounded-2xl p-10 text-center text-slate-400 text-sm font-semibold">No students registered in ${selectedClass} yet. Add them in the Students tab first.</div>`;
+        return;
+    }
+
+    // The attendance % on each report card needs each student's full
+    // history, but the login-time hydration only covers a recent rolling
+    // window (see refreshAttendanceList) so the app isn't pulling the
+    // entire school's attendance history on every login. Fetch full
+    // history for just this class's roster, on demand, right before
+    // rendering their reports.
+    previewArea.innerHTML = `<div class="bg-white border border-slate-200 rounded-2xl p-10 text-center text-slate-400 text-sm font-semibold">Loading attendance history for ${selectedClass}&hellip;</div>`;
+    await Promise.all(classStudents.map(s => refreshAttendanceForStudent(s.id)));
+
+    // Same on-demand pull for report card remarks (Class Teacher's /
+    // Headteacher's comments) as attendance above: the login-time
+    // migration only pushes local data, it doesn't pull every student's
+    // saved remarks, so fetch this class's roster here — right before
+    // rendering — so a comment saved from a different device/browser
+    // shows up instead of appearing blank.
+    await Promise.all(classStudents.map(s => refreshReportRemarksForStudent(s.id)));
+
+    // Fees Balance on the report card is Administrator-only, and only when
+    // they've already unlocked Finance in this browser session (this is a
+    // read of finance data, so it must go through the same Finance-scope
+    // gate as everywhere else — see FinanceAuthAPI.isUnlocked()). Teachers
+    // can generate these same report cards but structurally can never
+    // unlock Finance (see finance-auth.routes.js), so they simply never
+    // reach this branch and their report cards are byte-for-byte what they
+    // were before this feature existed.
+    //
+    // feeBalanceByStudentId stays an empty Map (not populated) for anyone
+    // else, which is exactly what buildOLevelReportPage/buildALevelReportPage
+    // need to omit the "FEES BALANCE" item entirely (their feeBalance
+    // param defaults to null when nothing is passed in).
+    const feeBalanceByStudentId = new Map();
+    if (currentUser.role === ROLES.ADMIN && FinanceAuthAPI.isUnlocked()) {
+        try {
+            const balances = await FinanceAPI.getPayments({ term, year, class: selectedClass });
+            (balances || []).forEach(b => feeBalanceByStudentId.set(b.id, b.balance));
+        } catch (err) {
+            // Never let a Finance hiccup (expired token, brief network blip,
+            // etc.) block report card generation — worst case, the balance
+            // item is just missing from this batch, same as if Finance had
+            // never been unlocked at all.
+            console.warn('Could not load fee balances for report cards:', err.message || err);
+        }
+    }
+
+    // Build the date->status lookup once for the whole class instead of
+    // letting every student's report card re-scan the entire attendanceStorage
+    // object for its own rows (see buildAttendanceIndexByStudent for why).
+    const attendanceIndex = buildAttendanceIndexByStudent();
+    previewArea.innerHTML = classStudents.map(student => {
+        const feeBalance = feeBalanceByStudentId.has(student.id) ? feeBalanceByStudentId.get(student.id) : null;
+        return isALevel
+            ? buildALevelReportPage(student, term, year, nextBegins, nextEnds, true, attendanceIndex, feeBalance)
+            : buildOLevelReportPage(student, term, year, nextBegins, nextEnds, true, attendanceIndex, feeBalance);
+    }).join('');
+}
+/* ---------------------------------------------------------
+   6c. REPORT CARD SHARED HELPERS
+   A subject only counts as "recorded" when marksStorage[key].touched
+   is true — i.e. the teacher actually entered a mark or remark for it —
+   AND it still has a valid computed score (avgMark / finalTotal). The
+   second condition is what makes a subject disappear again once every
+   mark for it has been cleared/deleted, instead of lingering as an
+   empty/dashed row. This is what makes a subject automatically appear on
+   (or stay off) a student's report card the moment real data is entered
+   or removed.
+   --------------------------------------------------------- */
+function getALevelSubjectRecords(student, termYear) {
+    const { term, year } = termYear || getViewedTermYear();
+    return aLevelSubjects
+        .filter(subj => {
+            const m = marksStorage[buildScoreRecordKey(subj, student.id, term, year)];
+            return m && m.touched;
+        })
+        .map(subj => {
+            const recordKey = buildScoreRecordKey(subj, student.id, term, year);
+            const marks = marksStorage[recordKey];
+            const isSubsidiary = subsidiarySubjects.includes(subj.toUpperCase());
+            const avgMark = computeALevelAvgMark(marks);
+            const gradeInfo = computeALevelGrade(avgMark, isSubsidiary);
+            return { subj, isSubsidiary, marks, avgMark, gradeInfo };
+        })
+        // A subject that was touched at some point but has since had all its
+        // papers cleared/deleted has no valid mark anymore (avgMark is null)
+        // — drop it entirely instead of surfacing an empty/dashed row on the
+        // profile view, performance summary, or report card.
+        .filter(record => record.avgMark !== null);
+}
+function getOLevelSubjectRecords(student, termYear) {
+    const { term, year } = termYear || getViewedTermYear();
+    return oLevelSubjects
+        .filter(subj => {
+            const m = marksStorage[buildScoreRecordKey(subj, student.id, term, year)];
+            return m && m.touched;
+        })
+        .map(subj => {
+            const recordKey = buildScoreRecordKey(subj, student.id, term, year);
+            const marks = marksStorage[recordKey];
+            const avScore = calculateAOAverage(marks.ao1, marks.ao2);
+            const faScore = (avScore / 3.0) * 20;
+            const finalTotal = computeOLevelFinalTotal(marks, faScore);
+            const gradeData = computeOfficialGrade(finalTotal);
+            return { subj, marks, avScore, faScore, finalTotal, gradeData };
+        })
+        // Same reasoning as A-Level above: a cleared/deleted E.O.T mark means
+        // finalTotal is null, so the subject no longer has a valid score and
+        // must be filtered out rather than shown with empty dashes.
+        .filter(record => record.finalTotal !== null);
+}
+// Groups attendanceStorage (keyed "date_studentId") by studentId in a
+// single O(total attendance rows) pass. Pass the result into
+// getAttendanceSummary() as `index` when computing summaries for many
+// students back-to-back (e.g. printing a whole class's report cards) —
+// without it, getAttendanceSummary falls back to scanning the entire
+// attendanceStorage object on every call, which is fine for one student
+// (profile modal, a student's own report) but turns into an O(students x
+// attendance rows) scan when repeated for a full class/school, which is
+// exactly the kind of thing that made "Generate Report Cards" for a large
+// class feel like it was freezing.
+function buildAttendanceIndexByStudent() {
+    const index = {};
+    for (const key in attendanceStorage) {
+        // key = "<date>_<studentId>" — studentId is everything after the
+        // first underscore since dates are always YYYY-MM-DD (no
+        // underscores of their own).
+        const studentId = key.slice(key.indexOf('_') + 1);
+        (index[studentId] || (index[studentId] = [])).push(attendanceStorage[key]);
+    }
+    return index;
+}
+function getAttendanceSummary(student, index = null) {
+    const records = index
+        ? (index[student.id] || [])
+        : (() => {
+            const suffix = `_${student.id}`;
+            return Object.keys(attendanceStorage)
+                .filter(key => key.endsWith(suffix))
+                .map(key => attendanceStorage[key]);
+        })();
+    const present = records.filter(r => r === 'Present').length;
+    const absent = records.filter(r => r === 'Absent').length;
+    const excused = records.filter(r => r === 'Excused').length;
+    const total = records.length;
+    const pct = total > 0 ? Math.round((present / total) * 100) : null;
+    return { present, absent, excused, total, pct };
+}
+function buildPerformanceRemark(records, isALevel) {
+    if (records.length === 0) return "No subject scores have been recorded for this learner yet this term.";
+    // Only subjects with an actual valid mark (avgMark/finalTotal not null)
+    // count toward the term average — a subject still awaiting its mark
+    // must never drag the average down as if it scored 0.
+    const gradedRecords = records.filter(r => (isALevel ? r.avgMark : r.finalTotal) !== null);
+    if (gradedRecords.length === 0) return "No subject scores have been recorded for this learner yet this term.";
+    const avgPercent = isALevel
+        ? gradedRecords.reduce((s, r) => s + r.avgMark, 0) / gradedRecords.length
+        : gradedRecords.reduce((s, r) => s + r.finalTotal, 0) / gradedRecords.length;
+    const rounded = avgPercent.toFixed(1);
+    if (avgPercent >= 75) return `An exceptional term overall, averaging ${rounded}%. The learner consistently demonstrates strong mastery across subjects &mdash; keep nurturing this excellent standard.`;
+    if (avgPercent >= 65) return `An outstanding term overall, averaging ${rounded}%. With continued consistency, even higher grades are within reach.`;
+    if (avgPercent >= 55) return `A satisfactory term overall, averaging ${rounded}%. Steady, focused revision will help push performance further.`;
+    if (avgPercent >= 45) return `A basic level of performance this term, averaging ${rounded}%. Extra effort and support in the weaker subjects is recommended.`;
+    return `Performance this term, averaging ${rounded}%, is below the expected standard. Close follow-up and remedial support is strongly recommended.`;
+}
+// Colour bands mirror each level's own grading scale, so a bar's colour always
+// reflects how that specific score was actually graded (A=green ... E=red).
+// Kept to the app's 5-color palette (black/grey, white, red, green, blue):
+// grey for ungraded/mid-tier, green for the top band, blue for the next,
+// and two shades of red for the lower bands.
+function getPerformanceColor(score, isALevel) {
+    if (score === null || score === undefined) return '#a1a1aa'; // ungraded - neutral grey
+    const bands = isALevel ? [80, 70, 60, 50] : [75, 65, 55, 45];
+    if (score >= bands[0]) return '#16a34a'; // A - green (success)
+    if (score >= bands[1]) return '#2563eb'; // B - blue (secondary brand)
+    if (score >= bands[2]) return '#71717a'; // C - neutral grey (mid-tier)
+    if (score >= bands[3]) return '#f87171'; // D - lighter red (caution)
+    return '#dc2626';                        // E - red (danger)
+}
+function buildSubjectBars(records, isALevel) {
+    if (records.length === 0) return '<p class="rc-empty-note">No scores recorded yet.</p>';
+    return `<div class="rc-bars-grid">${records.map(r => {
+        const score = isALevel ? r.avgMark : r.finalTotal;
+        const color = getPerformanceColor(score, isALevel);
+        // Ungraded subject (mark not yet entered) — show an empty track and
+        // a dash instead of drawing a fake 0-width-floor bar.
+        const width = score === null ? 0 : Math.max(2, Math.min(100, score));
+        return `
+        <div class="rc-bar-row">
+            <span class="rc-bar-label">${isALevel ? formatALevelSubjectDisplayName(r.subj) : r.subj}</span>
+            <span class="rc-bar-track"><span class="rc-bar-fill" style="width:${width}%;background:${color};"></span></span>
+            <span class="rc-bar-score" style="color:${color};">${displayOrDash(score)}</span>
+        </div>`;
+    }).join('')}</div>`;
+}
+function buildSummarySection(student, subjectRecords, isALevel, attendanceIndex = null) {
+    const attendance = getAttendanceSummary(student, attendanceIndex);
+    const remarkText = buildPerformanceRemark(subjectRecords, isALevel);
+    // Subjects awaiting a valid mark are excluded from the average and from
+    // "best subject" — an ungraded subject must never count as a 0 that
+    // drags the average down, nor be picked as the top performer.
+    const gradedRecords = subjectRecords.filter(r => (isALevel ? r.avgMark : r.finalTotal) !== null);
+    const avgScore = gradedRecords.length > 0
+        ? (isALevel
+            ? gradedRecords.reduce((s, r) => s + r.avgMark, 0) / gradedRecords.length
+            : gradedRecords.reduce((s, r) => s + r.finalTotal, 0) / gradedRecords.length)
+        : null;
+    const bestSubject = gradedRecords.length > 0
+        ? gradedRecords.reduce((best, r) => {
+            const score = isALevel ? r.avgMark : r.finalTotal;
+            const bestScore = isALevel ? best.avgMark : best.finalTotal;
+            return score > bestScore ? r : best;
+        })
+        : null;
+    return `
+        <div class="rc-summary-section">
+            <div class="rc-summary-grid">
+                <div class="rc-summary-card">
+                    <h4>Term Snapshot</h4>
+                    <div class="rc-summary-row"><span>Average Score</span><span>${avgScore !== null ? (isALevel ? Math.round(avgScore) : avgScore.toFixed(1)) + '%' : 'N/A'}</span></div>
+                    <div class="rc-summary-row"><span>Attendance</span><span>${attendance.total > 0 ? `${attendance.present}/${attendance.total} days (${attendance.pct}%)` : 'Not yet recorded'}</span></div>
+                    <div class="rc-summary-row"><span>Best Subject</span><span>${bestSubject ? (isALevel ? formatALevelSubjectDisplayName(bestSubject.subj) : bestSubject.subj) : 'N/A'}</span></div>
+                </div>
+                <div class="rc-summary-card">
+                    <h4>Subject Performance Overview</h4>
+                    ${buildSubjectBars(subjectRecords, isALevel)}
+                </div>
+            </div>
+            <div class="rc-remark-box">
+                <h4>Performance Overview (System Generated)</h4>
+                <p>${remarkText}</p>
+            </div>
+        </div>
+    `;
+}
+function buildALevelReportPage(student, term, year, nextBegins, nextEnds, editableComments = true, attendanceIndex = null, feeBalance = null) {
+    const subjectRecords = getALevelSubjectRecords(student);
+    // A subject still awaiting a valid mark contributes no points — it must
+    // never be silently counted as an 'E' (1 point) in the term's total.
+    const totalPoints = subjectRecords.reduce((sum, r) => sum + (r.gradeInfo.points ?? 0), 0);
+
+    const rows = subjectRecords.length > 0 ? subjectRecords.map(r => `
+        <tr>
+            <td class="rc-subj">${formatALevelSubjectDisplayName(r.subj)}${r.isSubsidiary ? ' <span class="rc-sub-tag">SUB</span>' : ''}</td>
+            <td class="rc-num">${formatWholeScoreDisplay(r.marks.p1, '-')}</td>
+            <td class="rc-num">${formatWholeScoreDisplay(r.marks.p2, '-')}</td>
+            <td class="rc-num">${displayOrDash(r.avgMark)}</td>
+            <td class="rc-grade">${displayOrDash(r.gradeInfo.grade)}</td>
+            <td class="rc-grade">${r.gradeInfo.grade === null ? '-' : `${r.gradeInfo.grade} (${r.gradeInfo.points} pt${r.gradeInfo.points === 1 ? '' : 's'})`}</td>
+            <td class="rc-descriptor">${r.marks.remarks ? escapeHTML(r.marks.remarks) : displayOrDash(r.gradeInfo.descriptor, 'Not yet graded')}</td>
+        </tr>
+    `).join('') : `<tr><td colspan="7" class="rc-empty">No scores recorded for this learner yet. Enter marks in the Scores tab and they will appear here automatically.</td></tr>`;
+
+    return `
+        <div class="report-page report-page-alevel">
+            <div class="rc-header-top">
+                <img src="school_badge.jpg" class="rc-logo" alt="School Badge">
+                <div class="rc-school-info">
+                    <h1>${SCHOOL.name}</h1>
+                    ${schoolContactHTML()}
+                    ${schoolMottoHTML('p','rc-motto')}
+                </div>
+                <div class="rc-qr-box">${student.photoUrl ? `<img src="${escapeHTML(student.photoUrl)}" alt="Student Photo">` : 'PHOTO'}</div>
+            </div>
+            <div class="rc-report-title">END OF TERM ACADEMIC REPORT CARD &mdash; A-LEVEL</div>
+            <div class="rc-learner-row">
+                <div><span>NAME:</span>${escapeHTML(student.name)}</div>
+                <div><span>CLASS:</span><span class="rc-tag">${escapeHTML(student.class)}</span></div>
+                <div><span>TERM:</span><span class="rc-tag">${term}</span></div>
+                <div><span>YEAR:</span><span class="rc-tag">${year}</span></div>
+                <div><span>STUDENT ID:</span>${student.id}</div>
+                ${feeBalance !== null ? `<div><span>FEES BALANCE:</span><span class="rc-tag">${feeBalance <= 0 ? 'FULLY PAID' : formatUGX(feeBalance)}</span></div>` : ''}
+            </div>
+            <table class="rc-table">
+                <thead>
+                    <tr>
+                        <th>Subject</th>
+                        <th>P1</th>
+                        <th>P2</th>
+                        <th>A.S</th>
+                        <th>Paper Grade</th>
+                        <th>Subject Grade</th>
+                        <th>Teacher's Remarks</th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>
+            <div class="rc-overall-row">
+                <div class="rc-overall-box">
+                    <span class="rc-overall-label">Total Points</span>
+                    <span class="rc-overall-value">${totalPoints}</span>
+                </div>
+                <table class="rc-legend-table">
+                    <tr class="rc-legend-head"><td>Grade</td><td>A</td><td>B</td><td>C</td><td>D</td><td>E</td></tr>
+                    <tr><td>Score Range</td><td>80+</td><td>70&ndash;79</td><td>60&ndash;69</td><td>50&ndash;59</td><td>0&ndash;49</td></tr>
+                    <tr><td>Descriptor</td><td>Exceptional</td><td>Outstanding</td><td>Satisfactory</td><td>Basic</td><td>Elementary</td></tr>
+                    <tr><td>Points (Principal)</td><td>5</td><td>4</td><td>3</td><td>2</td><td>1</td></tr>
+                    <tr><td>Points (Subsidiary)</td><td>1</td><td>1</td><td>1</td><td>1</td><td>0</td></tr>
+                </table>
+            </div>
+            ${buildSummarySection(student, subjectRecords, true, attendanceIndex)}
+            <div class="rc-footer">
+                ${buildCommentRow("CLASS TEACHER'S COMMENT", student.id, term, year, 'classTeacherComment', editableComments)}
+                <div class="rc-comment-row">
+                    <span class="rc-sign">SIGNATURE:</span><span class="rc-sign-line"></span>
+                </div>
+                ${buildCommentRow("HEADTEACHER'S COMMENT", student.id, term, year, 'headteacherComment', editableComments)}
+                <div class="rc-comment-row">
+                    <span class="rc-sign">SIGNATURE:</span><span class="rc-sign-line"></span>
+                </div>
+                <div class="rc-comment-row">
+                    <span class="rc-comment-label">NEXT TERM BEGINS:</span>
+                    <span class="rc-comment-line">${nextBegins ? formatReportDate(nextBegins) : ''}</span>
+                    <span class="rc-comment-label">ENDS ON:</span>
+                    <span class="rc-comment-line">${nextEnds ? formatReportDate(nextEnds) : ''}</span>
+                </div>
+                <div class="rc-legal-row">
+                    ${schoolMottoHTML('span','rc-motto')}
+                    <span class="rc-print-meta">Printed on ${formatGeneratedTimestamp()} &middot; via Rontech School Suite</span>
+                    <span class="rc-stamp-note">NOT VALID WITHOUT STAMP</span>
+                </div>
+            </div>
+        </div>
+    `;
+}
+function getCompetencyDescriptor(grade) {
+    switch (grade) {
+        case 'A': return "Demonstrates an extraordinary level of competency";
+        case 'B': return "Demonstrates a high level of competency";
+        case 'C': return "Demonstrates an adequate level of competency";
+        case 'D': return "Demonstrates a minimum level of competency";
+        case 'E': return "Demonstrates below the basic level of competency";
+        default: return "Not yet graded — awaiting a valid mark";
+    }
+}
+function getOverallIdentifier(avgScore) {
+    if (avgScore >= 2.5) return "OUTSTANDING";
+    if (avgScore >= 1.5) return "MODERATE";
+    return "BASIC";
+}
+/* ---------------------------------------------------------
+   O-LEVEL OVERALL ACHIEVEMENT — tiered by class level.
+   S.1/S.2 learners sit 12 subjects; S.3/S.4 learners sit 9.
+   Overall Achievement = (sum of every recorded subject's Final
+   score) / (tier subject count &times; 100) &times; 3 — i.e.
+   divide the total by 1200 for S.1/S.2, or by 900 for S.3/S.4.
+   This keeps the result on the same 0&ndash;3 scale the
+   BASIC/MODERATE/OUTSTANDING identifiers already use, but now
+   reflects the tier's fixed subject load rather than however
+   many subjects happen to have marks entered so far.
+   --------------------------------------------------------- */
+const O_LEVEL_TIER_SUBJECT_COUNTS = { 'S.1': 12, 'S.2': 12, 'S.3': 9, 'S.4': 9 };
+function calculateOLevelOverallAchievement(classLevel, subjectRecords) {
+    const tierSubjectCount = O_LEVEL_TIER_SUBJECT_COUNTS[classLevel] || 12;
+    const denominator = tierSubjectCount * 100; // 1200 for S.1/S.2, 900 for S.3/S.4
+    // A subject still awaiting a valid Final mark contributes nothing here —
+    // it must never be silently counted as a 0.
+    const totalScore = subjectRecords.reduce((sum, r) => sum + (r.finalTotal ?? 0), 0);
+    // Round to 1 decimal place here (at the source) rather than only at display
+    // time. The identifier boundary check (getOverallIdentifier) and the
+    // Best/Worst performer cutoffs both compare against this same value, so if
+    // it were left as a raw float (e.g. 1.4975 due to floating-point division),
+    // it could display as "1.5" via toFixed(1) while still failing a `>= 1.5`
+    // check and being misclassified as BASIC. Rounding once here keeps every
+    // consumer of this score in sync.
+    return Math.round(((totalScore / denominator) * 3) * 10) / 10;
+}
+function buildOLevelReportPage(student, term, year, nextBegins, nextEnds, editableComments = true, attendanceIndex = null, feeBalance = null) {
+    const subjectRecords = getOLevelSubjectRecords(student);
+
+    // overallAvg/overallIdentifier (and buildSummarySection below) intentionally
+    // keep using the untouched `subjectRecords` — i.e. only subjects that
+    // actually have a graded/touched entry. Padding the table with the full
+    // master subject list (below) is a display-only concern and must never
+    // feed into these calculations, or an ungraded subject would start
+    // silently dragging the Overall Achievement average down.
+    const overallAvg = calculateOLevelOverallAchievement(student.class, subjectRecords);
+    const overallIdentifier = getOverallIdentifier(overallAvg);
+
+    // O-Level classes (S.1 - S.4) always print the complete 15-subject master
+    // curriculum on the report card, even for subjects the student has no
+    // marks/teacher entries for yet — those simply render as blank rows so
+    // the card reads as a full record rather than only whatever happens to
+    // be graded so far. Any class that isn't in the O-Level tier (this
+    // function is only ever invoked for non-A-Level classes today, but this
+    // guards against a future/non-standard class value landing here) falls
+    // back to the original "only what's actually offered/graded" behaviour,
+    // matching A-Level and leaving that path untouched.
+    const isOLevelClass = O_LEVEL_STATUS_CLASSES.includes(student.class);
+    const displayRecords = isOLevelClass
+        ? oLevelSubjects.map(subj => subjectRecords.find(r => r.subj === subj) || {
+            subj,
+            marks: {},
+            avScore: null,
+            faScore: null,
+            finalTotal: null,
+            gradeData: {}
+        })
+        : subjectRecords;
+
+    // Blank-cell rule (display only): any of these seven fields with no
+    // recorded value renders as a completely empty cell rather than a "-".
+    // formatAOScoreDisplay/formatWholeScoreDisplay already collapse a raw
+    // 0 (i.e. "touched but no real value entered") to the emptyValue we pass
+    // in, so passing '' here — instead of the '-' used elsewhere in the app
+    // (e.g. the A-Level table above) — is enough to satisfy "zero-with-no-
+    // data" too. This is purely cosmetic: the underlying r.avScore/r.faScore/
+    // r.finalTotal/r.gradeData.grade values themselves are untouched, so
+    // calculateOLevelOverallAchievement (which sums r.finalTotal via
+    // `?? 0` and only over subjectRecords, never displayRecords) and
+    // getOLevelSubjectRecords' own null-filtering keep working exactly as
+    // before — nothing here changes what is calculated, only how a missing
+    // value is shown.
+    const rows = displayRecords.length > 0 ? displayRecords.map(r => `
+        <tr>
+            <td class="rc-subj">${r.subj}</td>
+            <td class="rc-num">${formatAOScoreDisplay(r.marks.ao1, '')}</td>
+            <td class="rc-num">${formatAOScoreDisplay(r.marks.ao2, '')}</td>
+            <td class="rc-num">${r.avScore !== null && r.avScore !== undefined && r.avScore !== 0 ? r.avScore.toFixed(1) : ''}</td>
+            <td class="rc-num">${r.faScore !== null && r.faScore !== undefined && r.faScore !== 0 ? Math.round(r.faScore) : ''}</td>
+            <td class="rc-num">${formatWholeScoreDisplay(r.marks.eot, '')}</td>
+            <td class="rc-final">${r.finalTotal !== null && r.finalTotal !== undefined && r.finalTotal !== 0 ? r.finalTotal : ''}</td>
+            <td class="rc-grade">${r.gradeData.grade || ''}</td>
+            <td class="rc-descriptor">${r.gradeData.grade ? getCompetencyDescriptor(r.gradeData.grade) : ''}</td>
+            <td class="rc-num">${escapeHTML(r.marks.remarks || '')}</td>
+        </tr>
+    `).join('') : `<tr><td colspan="10" class="rc-empty">No scores recorded for this learner yet.</td></tr>`;
+
+    return `
+        <div class="report-page report-page-olevel">
+            <div class="rc-header-top">
+                <img src="school_badge.jpg" class="rc-logo" alt="School Badge">
+                <div class="rc-school-info">
+                    <h1>${SCHOOL.name}</h1>
+                    ${schoolContactHTML()}
+                    ${schoolMottoHTML('p','rc-motto')}
+                </div>
+                <div class="rc-qr-box">${student.photoUrl ? `<img src="${escapeHTML(student.photoUrl)}" alt="Student Photo">` : 'PHOTO'}</div>
+            </div>
+            <div class="rc-report-title">LEARNER'S TERMLY ACHIEVEMENT REPORT</div>
+            <div class="rc-learner-row">
+                <div><span>LEARNER'S NAME:</span>${escapeHTML(student.name)}</div>
+                <div><span>CLASS:</span><span class="rc-tag">${escapeHTML(student.class)}</span></div>
+                <div><span>TERM:</span><span class="rc-tag">${term}</span></div>
+                <div><span>YEAR:</span><span class="rc-tag">${year}</span></div>
+                <div><span>STUDENT ID:</span>${student.id}</div>
+                ${feeBalance !== null ? `<div><span>FEES BALANCE:</span><span class="rc-tag">${feeBalance <= 0 ? 'FULLY PAID' : formatUGX(feeBalance)}</span></div>` : ''}
+            </div>
+            <table class="rc-table">
+                <thead>
+                    <tr>
+                        <th>Subject</th>
+                        <th>AO1</th>
+                        <th>AO2</th>
+                        <th>Av. Score</th>
+                        <th>F.A (20)</th>
+                        <th>E.O.T (80)</th>
+                        <th>Final (100)</th>
+                        <th>Grade</th>
+                        <th>Grade Descriptor</th>
+                        <th>TR's Initial</th>
+                    </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+            </table>
+            <div class="rc-overall-row">
+                <div class="rc-overall-box">
+                    <span class="rc-overall-label">Overall Achievement</span>
+                    <span class="rc-overall-value">${overallAvg.toFixed(1)} &mdash; ${overallIdentifier}</span>
+                </div>
+                <table class="rc-legend-table">
+                    <tr class="rc-legend-head"><td>Score</td><td>75-100</td><td>65-74</td><td>55-64</td><td>45-54</td><td>44-0</td></tr>
+                    <tr><td>Grade</td><td>A</td><td>B</td><td>C</td><td>D</td><td>E</td></tr>
+                </table>
+            </div>
+            <div class="rc-two-col">
+                <table class="rc-mini-table">
+                    <tr><th>Identifiers</th><th>Description</th></tr>
+                    <tr><td>0 &ndash; 1.4</td><td>Basic</td></tr>
+                    <tr><td>1.5 &ndash; 2.4</td><td>Moderate</td></tr>
+                    <tr><td>2.5 &ndash; 3.0</td><td>Outstanding</td></tr>
+                </table>
+                <table class="rc-mini-table">
+                    <tr><th>Grade</th><th>Assessment</th></tr>
+                    <tr><td>A</td><td>Exceptional</td></tr>
+                    <tr><td>B</td><td>Outstanding</td></tr>
+                    <tr><td>C</td><td>Satisfactory</td></tr>
+                    <tr><td>D</td><td>Basic</td></tr>
+                    <tr><td>E</td><td>Elementary</td></tr>
+                </table>
+            </div>
+            ${buildSummarySection(student, subjectRecords, false, attendanceIndex)}
+            <div class="rc-footer">
+                ${buildCommentRow("CLASS TEACHER'S COMMENT", student.id, term, year, 'classTeacherComment', editableComments)}
+                <div class="rc-comment-row">
+                    <span class="rc-sign">SIGNATURE:</span><span class="rc-sign-line"></span>
+                </div>
+                ${buildCommentRow("HEADTEACHER'S COMMENT", student.id, term, year, 'headteacherComment', editableComments)}
+                <div class="rc-comment-row">
+                    <span class="rc-sign">SIGNATURE:</span><span class="rc-sign-line"></span>
+                </div>
+                <div class="rc-comment-row">
+                    <span class="rc-comment-label">NEXT TERM BEGINS:</span>
+                    <span class="rc-comment-line">${nextBegins ? formatReportDate(nextBegins) : ''}</span>
+                    <span class="rc-comment-label">ENDS ON:</span>
+                    <span class="rc-comment-line">${nextEnds ? formatReportDate(nextEnds) : ''}</span>
+                </div>
+                <div class="rc-legal-row">
+                    <span>AOI &ndash; Activity of Integration &nbsp;|&nbsp; AS &ndash; Average Score &nbsp;|&nbsp; FA &ndash; Formative Assessment</span>
+                    <span class="rc-stamp-note">ONLY VALID WITH A STAMP</span>
+                </div>
+            </div>
+        </div>
+    `;
+}
+function formatGeneratedTimestamp() {
+    const now = new Date();
+    const datePart = now.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    const timePart = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    return `${datePart} at ${timePart}`;
+}
+function formatReportDate(dateStr) {
+    const d = new Date(dateStr);
+    if (isNaN(d)) return dateStr;
+    return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+async function printReportCards() {
+    // RBAC guard: bulk "Print / Save PDF (Whole Class)" is Administrator-only.
+    // The button itself is already hidden for non-admins (see renderReportsTab),
+    // but this function is reachable directly from the console/devtools, so it
+    // must refuse on its own too — the UI hiding it is not the real boundary.
+    if (!getPermissions(currentUser.role).canPrintWholeClass) {
+        alert('Only an Administrator can print or export report cards for a whole class.');
+        return;
+    }
+    // Always regenerate right before printing so the printed output reflects
+    // any marks entered since the preview was last generated. generateReportCards
+    // is async (it fetches attendance history before populating the preview), so
+    // this MUST be awaited — printing before it resolves was grabbing whatever
+    // was already in report-cards-preview (stale content, or the "Loading
+    // attendance history..." placeholder), producing a blank/loading print.
+    await generateReportCards();
+    const previewArea = document.getElementById('report-cards-preview');
+    const printArea = document.getElementById('print-area');
+    if (!previewArea || !printArea || previewArea.innerHTML.trim() === '') {
+        alert('Select a class with registered students before printing.');
+        return;
+    }
+    printArea.innerHTML = previewArea.innerHTML;
+    // Batch export: this preview already compiles every student in the
+    // selected class into one continuous print job (one PDF when the
+    // browser's print dialog is used to "Save as PDF"). Temporarily swap
+    // the page title so that saved filename is meaningful instead of the
+    // generic app title — restored right after the print dialog closes.
+    const classSelect = document.getElementById('report-class-select');
+    const selectedClass = classSelect ? classSelect.value : 'Class';
+    const suggestedName = `${selectedClass}_ReportCards_${termSettings.term.replace(/\s+/g, '')}_${termSettings.year}`.replace(/[^\w-]/g, '');
+    const originalTitle = document.title;
+    document.title = suggestedName;
+    window.print();
+    document.title = originalTitle;
+}
+/* ---------------------------------------------------------
+   6d. ANALYTICS DATA AGGREGATION
+   Pulls real performance metrics per class level (S.1 - S.6) by
+   reusing the SAME per-student subject records + grading functions
+   already used for report cards (getOLevelSubjectRecords /
+   getALevelSubjectRecords, which call computeOfficialGrade /
+   computeALevelGrade internally) — no grading formula is
+   reimplemented here, only aggregated.
+   --------------------------------------------------------- */
+const ANALYTICS_CLASS_LEVELS = ['S.1', 'S.2', 'S.3', 'S.4', 'S.5', 'S.6'];
+function computeAnalyticsData() {
+    const classAverages = {};
+    const gradeCountsByClass = {};
+    const overallGradeCounts = { A: 0, B: 0, C: 0, D: 0, E: 0 };
+    const subjectTotals = {}; // { subjectName: { sum, count } }
+
+    ANALYTICS_CLASS_LEVELS.forEach(level => {
+        const isALevel = (level === 'S.5' || level === 'S.6');
+        const classStudents = studentsList.filter(s => s.class === level);
+        const gradeCounts = { A: 0, B: 0, C: 0, D: 0, E: 0 };
+        let scoreSum = 0;
+        let scoreCount = 0;
+
+        classStudents.forEach(student => {
+            const records = isALevel ? getALevelSubjectRecords(student) : getOLevelSubjectRecords(student);
+            records.forEach(r => {
+                const grade = isALevel ? r.gradeInfo.grade : r.gradeData.grade;
+                const score = isALevel ? r.avgMark : r.finalTotal;
+                // A subject still awaiting a valid mark has no grade/score yet —
+                // it must be left out of every count and average below, not
+                // counted as an 'E' or a 0.
+                if (score === null || grade === null) return;
+                if (gradeCounts[grade] !== undefined) gradeCounts[grade]++;
+                if (overallGradeCounts[grade] !== undefined) overallGradeCounts[grade]++;
+                scoreSum += score;
+                scoreCount++;
+                if (!subjectTotals[r.subj]) subjectTotals[r.subj] = { sum: 0, count: 0 };
+                subjectTotals[r.subj].sum += score;
+                subjectTotals[r.subj].count++;
+            });
+        });
+
+        classAverages[level] = scoreCount > 0 ? Math.round(scoreSum / scoreCount) : 0;
+        gradeCountsByClass[level] = gradeCounts;
+    });
+
+    let bestSubject = null;
+    let bestSubjectAvg = -1;
+    Object.keys(subjectTotals).forEach(subj => {
+        const avg = subjectTotals[subj].sum / subjectTotals[subj].count;
+        if (avg > bestSubjectAvg) {
+            bestSubjectAvg = avg;
+            bestSubject = subj;
+        }
+    });
+
+    return {
+        classAverages,
+        gradeCountsByClass,
+        overallGradeCounts,
+        bestSubject,
+        bestSubjectAvg: bestSubject ? Math.round(bestSubjectAvg) : 0
+    };
+}
+/* ---------------------------------------------------------
+   7. PERFORMANCE ANALYTICS GRAPH MODULE (Chart.js)
+   --------------------------------------------------------- */
+function renderAnalyticsModule() {
+    const analytics = computeAnalyticsData();
+    return `
+        <div class="space-y-6">
+            <div class="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                <div>
+                    <h3 class="text-sm font-black text-slate-900 uppercase"><i class="fa-solid fa-chart-column mr-2 text-teal-600"></i>Learner Performance Analytics & Trends</h3>
+                    <p class="text-xs font-semibold text-slate-500 mt-0.5">Visualizing grade distribution across school class tiers.</p>
+                </div>
+                <div>
+                    <select id="analytics-metric" onchange="initPerformanceChart()" class="p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-700">
+                        <option value="class-average">Average Score by Class</option>
+                        <option value="grade-distribution">Grade Distribution (A - E)</option>
+                    </select>
+                </div>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div class="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs flex items-center gap-4">
+                    <div class="w-11 h-11 rounded-xl bg-teal-50 text-teal-600 flex items-center justify-center text-lg flex-shrink-0">
+                        <i class="fa-solid fa-trophy"></i>
+                    </div>
+                    <div class="min-w-0">
+                        <p class="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Best Performed Subject (School-Wide)</p>
+                        <p class="text-lg font-black text-slate-900 truncate">${analytics.bestSubject || 'No scores recorded yet'}</p>
+                        ${analytics.bestSubject ? `<p class="text-xs font-bold text-teal-600">Average score: ${analytics.bestSubjectAvg}%</p>` : ''}
+                    </div>
+                </div>
+                <div class="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs flex items-center gap-4">
+                    <div class="w-11 h-11 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center text-lg flex-shrink-0">
+                        <i class="fa-solid fa-star"></i>
+                    </div>
+                    <div class="min-w-0">
+                        <p class="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">Total "A" Grades (All Classes)</p>
+                        <p class="text-lg font-black text-slate-900">${analytics.overallGradeCounts.A}</p>
+                    </div>
+                </div>
+            </div>
+            <div class="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs">
+                <h4 class="text-[11px] font-extrabold text-slate-500 uppercase tracking-wider mb-3">"A" Grades Achieved, By Class</h4>
+                <div class="grid grid-cols-3 sm:grid-cols-6 gap-3">
+                    ${ANALYTICS_CLASS_LEVELS.map(level => `
+                        <div class="bg-slate-50 border border-slate-200 rounded-xl p-3 text-center">
+                            <p class="text-[10px] font-extrabold text-slate-400 uppercase tracking-wider">${level}</p>
+                            <p class="text-xl font-black text-teal-700">${analytics.gradeCountsByClass[level].A}</p>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div class="bg-white border border-slate-200 p-6 rounded-2xl shadow-xs relative h-96 flex items-center justify-center">
+                    <canvas id="performanceChart"></canvas>
+                </div>
+                <div class="bg-white border border-slate-200 p-6 rounded-2xl shadow-xs relative h-96 flex flex-col items-center justify-center">
+                    <p class="text-[11px] font-extrabold text-slate-500 uppercase tracking-wider mb-2 self-start">Grade Distribution Proportions (All Classes)</p>
+                    <canvas id="gradeDistributionPieChart"></canvas>
+                </div>
+            </div>
+        </div>
+    `;
+}
+function initPerformanceChart() {
+    const analytics = computeAnalyticsData();
+    const ctx = document.getElementById('performanceChart');
+    if (!ctx) return;
+    
+    if (performanceChartInstance) {
+        performanceChartInstance.destroy();
+    }
+    const metricSelect = document.getElementById('analytics-metric');
+    const metricType = metricSelect ? metricSelect.value : 'class-average';
+    let chartConfig;
+    if (metricType === 'class-average') {
+        chartConfig = {
+            type: 'bar',
+            data: {
+                labels: ANALYTICS_CLASS_LEVELS,
+                datasets: [{
+                    label: 'Class Mean Score (%)',
+                    data: ANALYTICS_CLASS_LEVELS.map(level => analytics.classAverages[level]),
+                    backgroundColor: 'rgba(37, 99, 235, 0.8)',
+                    borderColor: 'rgba(29, 78, 216, 1)',
+                    borderWidth: 1,
+                    borderRadius: 8
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { labels: { font: { weight: 'bold', size: 11 } } }
+                },
+                scales: {
+                    y: { beginAtZero: true, max: 100, ticks: { font: { weight: 'bold' } } },
+                    x: { ticks: { font: { weight: 'bold' } } }
+                }
+            }
+        };
+    } else {
+        chartConfig = {
+            type: 'doughnut',
+            data: {
+                labels: ['Grade A', 'Grade B', 'Grade C', 'Grade D', 'Grade E'],
+                datasets: [{
+                    label: 'Number of Students',
+                    data: ['A', 'B', 'C', 'D', 'E'].map(g => analytics.overallGradeCounts[g]),
+                    backgroundColor: [
+                        'rgba(22, 163, 74, 0.9)',
+                        'rgba(37, 99, 235, 0.9)',
+                        'rgba(113, 113, 122, 0.9)',
+                        'rgba(248, 113, 113, 0.9)',
+                        'rgba(220, 38, 38, 0.9)'
+                    ],
+                    borderWidth: 2,
+                    borderColor: '#ffffff'
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { position: 'bottom', labels: { font: { weight: 'bold', size: 11 } } }
+                }
+            }
+        };
+    }
+    performanceChartInstance = new Chart(ctx, chartConfig);
+
+    // Pie chart lives alongside the bar chart at all times (not tied to the
+    // dropdown above) — it always shows grade-distribution proportions across
+    // every class, using the same real, aggregated grade counts.
+    const pieCtx = document.getElementById('gradeDistributionPieChart');
+    if (pieCtx) {
+        if (gradeDistributionChartInstance) {
+            gradeDistributionChartInstance.destroy();
+        }
+        gradeDistributionChartInstance = new Chart(pieCtx, {
+            type: 'pie',
+            data: {
+                labels: ['Grade A', 'Grade B', 'Grade C', 'Grade D', 'Grade E'],
+                datasets: [{
+                    label: 'Share of Grades',
+                    data: ['A', 'B', 'C', 'D', 'E'].map(g => analytics.overallGradeCounts[g]),
+                    backgroundColor: [
+                        'rgba(22, 163, 74, 0.9)',
+                        'rgba(37, 99, 235, 0.9)',
+                        'rgba(113, 113, 122, 0.9)',
+                        'rgba(248, 113, 113, 0.9)',
+                        'rgba(220, 38, 38, 0.9)'
+                    ],
+                    borderWidth: 2,
+                    borderColor: '#ffffff'
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { position: 'bottom', labels: { font: { weight: 'bold', size: 11 } } }
+                }
+            }
+        });
+    }
+}
+/* ---------------------------------------------------------
+   7b. BEST & WORST PERFORMERS PANEL
+   Reuses the exact same Overall Achievement formulas already
+   used for report cards — calculateOLevelOverallAchievement()
+   for O-Level (0-3 scale) and the summed A-Level grade points
+   from getALevelSubjectRecords() (UACE-style points) — no new
+   scoring logic is introduced here, only filtering/sorting.
+
+   O-Level: Best = 2.5-3.0 inclusive, Worst = 1.4 and below.
+   A-Level: Best = 14 points and above, Worst = 4 points and below.
+   Only learners with at least one recorded (touched) subject are
+   eligible, so a student with no marks yet is never miscounted
+   as a "worst performer".
+   --------------------------------------------------------- */
+function computePerformersData(levelType) {
+    const isALevel = levelType === 'A-Level';
+    const levels = isALevel ? ['S.5', 'S.6'] : ['S.1', 'S.2', 'S.3', 'S.4'];
+    const classStudents = studentsList.filter(s => levels.includes(s.class));
+
+    const results = classStudents.map(student => {
+        if (isALevel) {
+            const records = getALevelSubjectRecords(student);
+            // Ungraded subjects (no valid mark yet) contribute no points.
+            const totalPoints = records.reduce((sum, r) => sum + (r.gradeInfo.points ?? 0), 0);
+            return { student, score: totalPoints, hasRecords: records.length > 0 };
+        }
+        const records = getOLevelSubjectRecords(student);
+        const overallAvg = records.length > 0 ? calculateOLevelOverallAchievement(student.class, records) : 0;
+        return { student, score: overallAvg, hasRecords: records.length > 0 };
+    }).filter(r => r.hasRecords);
+
+    const best = results
+        .filter(r => isALevel ? r.score >= 14 : (r.score >= 2.5 && r.score <= 3.0))
+        .sort((a, b) => b.score - a.score);
+    const worst = results
+        .filter(r => isALevel ? r.score <= 4 : r.score <= 1.4)
+        .sort((a, b) => a.score - b.score);
+
+    return { best, worst };
+}
+function renderPerformersModule() {
+    return `
+        <div class="space-y-6">
+            <div class="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+                <div>
+                    <h3 class="text-sm font-black text-slate-900 uppercase"><i class="fa-solid fa-ranking-star mr-2 text-teal-600"></i>Best &amp; Worst Performers</h3>
+                    <p class="text-xs font-semibold text-slate-500 mt-0.5">Learners at either end of the Overall Achievement scale, by curriculum level.</p>
+                </div>
+                <div class="inline-flex border border-slate-300 rounded-xl p-1 bg-slate-100">
+                    <button id="performers-toggle-olevel" type="button" onclick="switchPerformersLevel('O-Level')" class="px-4 py-2 rounded-lg text-xs font-extrabold uppercase tracking-wider transition">O-Level</button>
+                    <button id="performers-toggle-alevel" type="button" onclick="switchPerformersLevel('A-Level')" class="px-4 py-2 rounded-lg text-xs font-extrabold uppercase tracking-wider transition">A-Level</button>
+                </div>
+            </div>
+            <div id="performers-content"></div>
+        </div>
+    `;
+}
+function switchPerformersLevel(levelType) {
+    performersLevelView = levelType;
+    renderPerformersContent();
+}
+function renderPerformersContent() {
+    const oBtn = document.getElementById('performers-toggle-olevel');
+    const aBtn = document.getElementById('performers-toggle-alevel');
+    const isALevel = performersLevelView === 'A-Level';
+    if (oBtn) oBtn.className = `px-4 py-2 rounded-lg text-xs font-extrabold uppercase tracking-wider transition ${!isALevel ? 'bg-teal-600 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'}`;
+    if (aBtn) aBtn.className = `px-4 py-2 rounded-lg text-xs font-extrabold uppercase tracking-wider transition ${isALevel ? 'bg-teal-600 text-white shadow-xs' : 'text-slate-600 hover:text-slate-900'}`;
+
+    const container = document.getElementById('performers-content');
+    if (!container) return;
+    const { best, worst } = computePerformersData(performersLevelView);
+    const scoreLabel = isALevel ? 'Points' : 'Overall Achievement';
+    const criteriaBest = isALevel ? '14 points and above' : '2.5 &ndash; 3.0';
+    const criteriaWorst = isALevel ? '4 points and below' : '1.4 and below';
+
+    container.innerHTML = `
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            ${buildPerformersTable('Best Performers', true, best, isALevel, scoreLabel, criteriaBest)}
+            ${buildPerformersTable('Worst Performers', false, worst, isALevel, scoreLabel, criteriaWorst)}
+        </div>
+    `;
+}
+function buildPerformersTable(title, isBest, rows, isALevel, scoreLabel, criteriaText) {
+    const iconWrapClass = isBest ? 'w-11 h-11 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center text-lg flex-shrink-0' : 'w-11 h-11 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center text-lg flex-shrink-0';
+    const icon = isBest ? 'fa-trophy' : 'fa-triangle-exclamation';
+    const body = rows.length > 0 ? rows.map(r => `
+        <tr class="hover:bg-slate-50 transition">
+            <td class="p-4 font-mono text-xs font-bold text-teal-700">${r.student.id}</td>
+            <td class="p-4 font-bold text-slate-900">${escapeHTML(r.student.name)}</td>
+            <td class="p-4"><span class="bg-teal-50 text-teal-800 font-extrabold px-2.5 py-1 rounded-lg text-xs border border-teal-200">${escapeHTML(r.student.class)}</span></td>
+            <td class="p-4 text-center font-black text-slate-900">${isALevel ? r.score : r.score.toFixed(1)}</td>
+        </tr>
+    `).join('') : `<tr><td colspan="4" class="p-8 text-center text-slate-400 text-xs font-medium uppercase tracking-wider">No learners currently meet this criteria.</td></tr>`;
+
+    return `
+        <div class="bg-white border border-slate-200 rounded-2xl shadow-xs overflow-hidden">
+            <div class="p-5 border-b border-slate-200 flex items-center gap-3">
+                <div class="${iconWrapClass}"><i class="fa-solid ${icon}"></i></div>
+                <div class="min-w-0">
+                    <h4 class="text-xs font-black text-slate-900 uppercase tracking-wider">${title}</h4>
+                    <p class="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Criteria: ${criteriaText}</p>
+                </div>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-left border-collapse">
+                    <thead>
+                        <tr class="bg-slate-50 text-slate-500 uppercase text-[10px] font-extrabold tracking-wider border-b border-slate-200">
+                            <th class="p-4">Student ID</th>
+                            <th class="p-4">Full Name</th>
+                            <th class="p-4">Class</th>
+                            <th class="p-4 text-center">${scoreLabel}</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-100 text-xs text-slate-700">${body}</tbody>
+                </table>
+            </div>
+        </div>
+    `;
+}
+/* ---------------------------------------------------------
+   8. ATTENDANCE REGISTRY MODULE (Light Theme)
+   --------------------------------------------------------- */
+function renderAttendanceModule() {
+    const today = new Date().toISOString().split('T')[0];
+    return `
+        <div class="space-y-6">
+            <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white border border-slate-200 p-5 rounded-2xl shadow-xs">
+                <div class="flex flex-wrap items-center gap-4">
+                    <div>
+                        <label class="block text-[11px] font-extrabold text-slate-500 uppercase tracking-wider mb-1.5">Select Class Level</label>
+                        <select id="attendance-class-filter" onchange="loadAttendanceData()" class="p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-700 focus:ring-1 focus:ring-teal-500">
+                            <option value="S.1">S.1</option>
+                            <option value="S.2">S.2</option>
+                            <option value="S.3">S.3</option>
+                            <option value="S.4">S.4</option>
+                            <option value="S.5">S.5</option>
+                            <option value="S.6">S.6</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-extrabold text-slate-500 uppercase tracking-wider mb-1.5">Registry Date</label>
+                        <input type="date" id="attendance-date" value="${today}" onchange="loadAttendanceData()" class="p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-700 focus:ring-1 focus:ring-teal-500">
+                    </div>
+                </div>
+                <div class="flex gap-2">
+                    <button onclick="markAllPresent()" class="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-300 text-xs font-extrabold uppercase py-3 px-5 rounded-xl transition"><i class="fa-solid fa-check-double mr-1.5"></i>Mark All Present</button>
+                    <button onclick="saveAttendanceRegistry()" class="btn-neu-light text-xs font-extrabold uppercase py-3 px-5 rounded-xl shadow-xs transition"><i class="fa-solid fa-floppy-disk mr-1.5"></i>Save Attendance</button>
+                </div>
+            </div>
+            <div class="bg-white border border-slate-200 rounded-2xl overflow-hidden shadow-xs">
+                <div class="overflow-x-auto">
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="bg-slate-50 text-slate-500 uppercase text-[10px] font-extrabold tracking-wider border-b border-slate-200">
+                                <th class="p-4">Student ID</th>
+                                <th class="p-4">Full Name</th>
+                                <th class="p-4">Class Level</th>
+                                <th class="p-4 text-center">Status Selection</th>
+                            </tr>
+                        </thead>
+                        <tbody id="attendance-table-body" class="divide-y divide-slate-100 text-xs text-slate-700"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    `;
+}
+function loadAttendanceData() {
+    const tbody = document.getElementById('attendance-table-body');
+    const classFilter = document.getElementById('attendance-class-filter');
+    const dateField = document.getElementById('attendance-date');
+    
+    if (!tbody || !classFilter || !dateField) return;
+    const selectedClass = classFilter.value;
+    const selectedDate = dateField.value;
+    tbody.innerHTML = "";
+    
+    const classStudents = studentsList.filter(s => s.class === selectedClass);
+    updateDashboardStats();
+    
+    if (classStudents.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="4" class="p-8 text-center text-slate-400 text-xs font-medium uppercase tracking-wider">No student records found for ${selectedClass}.</td></tr>`;
+        return;
+    }
+    
+    const rowsHtml = classStudents.map(student => {
+        const recordKey = `${selectedDate}_${student.id}`;
+        if (!attendanceStorage[recordKey]) attendanceStorage[recordKey] = 'Present';
+        const currentStatus = attendanceStorage[recordKey];
+        
+        return `
+            <tr class="hover:bg-slate-50 transition">
+                <td class="p-4 font-mono text-xs font-bold text-teal-700">${student.id}</td>
+                <td class="p-4 font-bold text-slate-900">${escapeHTML(student.name)}</td>
+                <td class="p-4"><span class="bg-teal-50 text-teal-800 font-extrabold px-2.5 py-1 rounded-lg text-xs border border-teal-200">${escapeHTML(student.class)}</span></td>
+                <td class="p-4 text-center space-x-2">
+                    <button type="button" onclick="setAttendanceStatus('${student.id}', 'Present')" class="px-3 py-1.5 rounded-lg text-xs font-extrabold uppercase transition ${currentStatus === 'Present' ? 'bg-emerald-600 text-white shadow-xs' : 'bg-slate-100 text-slate-600 border border-slate-300 hover:bg-slate-200'}"><i class="fa-solid fa-check mr-1"></i>Present</button>
+                    <button type="button" onclick="setAttendanceStatus('${student.id}', 'Absent')" class="px-3 py-1.5 rounded-lg text-xs font-extrabold uppercase transition ${currentStatus === 'Absent' ? 'bg-rose-600 text-white shadow-xs' : 'bg-slate-100 text-slate-600 border border-slate-300 hover:bg-slate-200'}"><i class="fa-solid fa-xmark mr-1"></i>Absent</button>
+                    <button type="button" onclick="setAttendanceStatus('${student.id}', 'Excused')" class="px-3 py-1.5 rounded-lg text-xs font-extrabold uppercase transition ${currentStatus === 'Excused' ? 'bg-amber-600 text-white shadow-xs' : 'bg-slate-100 text-slate-600 border border-slate-300 hover:bg-slate-200'}"><i class="fa-solid fa-user-clock mr-1"></i>Excused</button>
+                </td>
+            </tr>
+        `;
+    }).join('');
+    tbody.innerHTML = rowsHtml;
+}
+// Daily register shortcut: sets every currently-listed student in the
+// selected class/date to "Present" in one click, instead of clicking
+// Present individually for each row. Reuses the exact same per-student
+// AttendanceAPI.setStatus() write that a manual click uses — no new
+// attendance logic, just a loop over the existing single-student path.
+function markAllPresent() {
+    if (!getPermissions(currentUser.role).canManageAttendance) return; // RBAC guard
+    const classFilter = document.getElementById('attendance-class-filter');
+    const dateField = document.getElementById('attendance-date');
+    if (!classFilter || !dateField) return;
+    const selectedClass = classFilter.value;
+    const selectedDate = dateField.value;
+    const classStudents = studentsList.filter(s => s.class === selectedClass);
+    if (classStudents.length === 0) return;
+    if (!confirm(`Mark all ${classStudents.length} student(s) in ${selectedClass} as Present for ${selectedDate}?`)) return;
+    classStudents.forEach(student => {
+        const recordKey = `${selectedDate}_${student.id}`;
+        attendanceStorage[recordKey] = 'Present';
+        AttendanceAPI.setStatus(selectedDate, student.id, 'Present', selectedClass).catch(() => {});
+    });
+    loadAttendanceData();
+    updateDashboardStats();
+}
+function setAttendanceStatus(studId, status) {
+    if (!getPermissions(currentUser.role).canManageAttendance) return; // RBAC guard
+    const dateField = document.getElementById('attendance-date');
+    const recordKey = `${dateField.value}_${studId}`;
+    attendanceStorage[recordKey] = status;
+    const classFilter = document.getElementById('attendance-class-filter');
+    AttendanceAPI.setStatus(dateField.value, studId, status, classFilter ? classFilter.value : undefined).catch(() => {});
+    loadAttendanceData();
+    updateDashboardStats();
+}
+async function saveAttendanceRegistry() {
+    if (!getPermissions(currentUser.role).canManageAttendance) return; // RBAC guard
+    const dateField = document.getElementById('attendance-date');
+    const classFilter = document.getElementById('attendance-class-filter');
+    try {
+        await AttendanceAPI.saveRegistry(dateField.value, classFilter ? classFilter.value : '');
+    } catch (err) {
+        alert(err.message || 'Could not save attendance. Please try again.');
+        return;
+    }
+    await refreshAttendanceList();
+    alert(`Attendance successfully recorded and saved for ${dateField.value}!`);
+    updateDashboardStats();
+}
+/* ---------------------------------------------------------
+   8b. EDUCATIONAL RESOURCES MODULE
+   Upload/download hub for teachers & admins to share notes, past
+   papers, schemes of work, etc. Files are held in-memory as data
+   URLs for now (no backend yet) — download works via a plain
+   anchor tag, no server round-trip needed.
+   --------------------------------------------------------- */
+const RESOURCE_MAX_BYTES = 4 * 1024 * 1024; // 4MB cap — kept under Vercel's ~4.5MB serverless request body limit
+function renderResourcesModule() {
+    const canUpload = getPermissions(currentUser.role).canManageResources;
+    const allSubjects = ['GENERAL', ...new Set([...oLevelSubjects, ...aLevelSubjects])];
+    return `
+        <div class="space-y-6">
+            <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white border border-slate-200 p-5 rounded-2xl shadow-xs">
+                <div class="flex flex-wrap items-end gap-4">
+                    <div>
+                        <label class="block text-[11px] font-extrabold text-slate-500 uppercase tracking-wider mb-1">Filter by Level</label>
+                        <select id="resource-level-filter" onchange="loadResourcesData()" class="p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-700 focus:ring-1 focus:ring-teal-500">
+                            <option value="ALL">All Levels</option>
+                            <option value="O-Level">O-Level</option>
+                            <option value="A-Level">A-Level</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-extrabold text-slate-500 uppercase tracking-wider mb-1">Search</label>
+                        <input type="text" id="resource-search" oninput="loadResourcesData()" placeholder="Search by title or subject..." class="p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700 w-64">
+                    </div>
+                </div>
+                ${canUpload ? `
+                <button onclick="toggleResourceForm()" class="w-full md:w-auto btn-neu-light text-xs font-extrabold uppercase tracking-wider py-2.5 px-4 rounded-xl transition shadow-xs">
+                    <i class="fa-solid fa-upload mr-2"></i>Upload Resource
+                </button>` : ''}
+            </div>
+            ${canUpload ? `
+            <div id="resource-form-container" class="hidden bg-white border border-slate-200 p-5 rounded-2xl shadow-xs transition-all duration-300 ease-in-out">
+                <h4 class="text-xs font-extrabold text-teal-700 uppercase tracking-wider mb-3"><i class="fa-solid fa-folder-plus mr-2"></i>Upload New Resource</h4>
+                <form onsubmit="handleAddResource(event)" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+                    <div class="sm:col-span-2 md:col-span-2">
+                        <label class="block text-[11px] font-extrabold text-slate-500 uppercase mb-1">Title</label>
+                        <input type="text" id="res-title" placeholder="e.g. Physics Wave Motion Notes" required class="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-extrabold text-slate-500 uppercase mb-1">Subject</label>
+                        <select id="res-subject" class="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-700">
+                            ${allSubjects.map(s => `<option value="${s}">${s}</option>`).join('')}
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-extrabold text-slate-500 uppercase mb-1">Target Level</label>
+                        <select id="res-level" class="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-700">
+                            <option value="All Levels">All Levels</option>
+                            <option value="O-Level">O-Level (S.1 &ndash; S.4)</option>
+                            <option value="A-Level">A-Level (S.5 &ndash; S.6)</option>
+                        </select>
+                    </div>
+                    <div class="sm:col-span-2 md:col-span-4">
+                        <label class="block text-[11px] font-extrabold text-slate-500 uppercase mb-1">File</label>
+                        <input type="file" id="res-file" required class="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700">
+                        <p class="text-[10px] text-slate-400 font-semibold mt-1">Accepted: PDF, Word, PowerPoint, Excel, images, ZIP. Max size 4MB.</p>
+                    </div>
+                    <div id="resource-form-error" class="hidden sm:col-span-2 md:col-span-4 text-xs font-bold text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2"></div>
+                    <div class="sm:col-span-2 md:col-span-4 flex justify-end space-x-2 pt-2">
+                        <button type="button" onclick="toggleResourceForm()" class="bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-extrabold uppercase py-2 px-4 rounded-xl"><i class="fa-solid fa-xmark mr-1.5"></i>Cancel</button>
+                        <button type="submit" id="resource-submit-btn" class="btn-neu-light text-xs font-extrabold uppercase py-2 px-4 rounded-xl transition"><i class="fa-solid fa-upload mr-1.5"></i>Upload</button>
+                    </div>
+                </form>
+            </div>` : ''}
+            <div id="resource-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+        </div>
+    `;
+}
+function toggleResourceForm() {
+    const formContainer = document.getElementById('resource-form-container');
+    if (formContainer) formContainer.classList.toggle('hidden');
+}
+function getFileIcon(fileName) {
+    const ext = (fileName.split('.').pop() || '').toLowerCase();
+    if (ext === 'pdf') return 'fa-file-pdf';
+    if (['doc', 'docx'].includes(ext)) return 'fa-file-word';
+    if (['ppt', 'pptx'].includes(ext)) return 'fa-file-powerpoint';
+    if (['xls', 'xlsx', 'csv'].includes(ext)) return 'fa-file-excel';
+    if (['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext)) return 'fa-file-image';
+    if (['zip', 'rar', '7z'].includes(ext)) return 'fa-file-zipper';
+    return 'fa-file-lines';
+}
+function getFileTypeLabel(fileName) {
+    const ext = (fileName.split('.').pop() || '').toUpperCase();
+    return ext || 'FILE';
+}
+function formatFileSize(bytes) {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+function handleAddResource(event) {
+    event.preventDefault();
+    if (!getPermissions(currentUser.role).canManageResources) return; // RBAC guard
+    const titleInput = document.getElementById('res-title');
+    const subjectSelect = document.getElementById('res-subject');
+    const levelSelect = document.getElementById('res-level');
+    const fileInput = document.getElementById('res-file');
+    const errorBox = document.getElementById('resource-form-error');
+    const submitBtn = document.getElementById('resource-submit-btn');
+
+    const title = titleInput.value.trim();
+    const file = fileInput.files[0];
+
+    if (errorBox) errorBox.classList.add('hidden');
+
+    if (!title || !file) {
+        if (errorBox) { errorBox.innerText = 'Please provide a title and choose a file.'; errorBox.classList.remove('hidden'); }
+        return;
+    }
+    if (file.size > RESOURCE_MAX_BYTES) {
+        if (errorBox) { errorBox.innerText = `That file is too large (${formatFileSize(file.size)}). Maximum allowed is 4MB.`; errorBox.classList.remove('hidden'); }
+        return;
+    }
+
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin mr-1.5"></i>Uploading...'; }
+
+    // Build a real FormData payload — ready to POST straight to a
+    // Node.js multer (or similar) endpoint at ENDPOINTS.RESOURCE_UPLOAD.
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('title', title);
+    formData.append('subject', subjectSelect.value);
+    formData.append('level', levelSelect.value);
+
+    const finishUpload = (resource) => {
+        resourcesList.push(resource);
+        toggleResourceForm();
+        event.target.reset();
+        if (submitBtn) { submitBtn.disabled = false; submitBtn.innerHTML = '<i class="fa-solid fa-upload mr-1.5"></i>Upload'; }
+        loadResourcesData();
+    };
+
+    ResourcesAPI.upload(formData).then((serverResource) => {
+        if (serverResource) {
+            // Backend is live and returned the stored resource's metadata/URL.
+            finishUpload(serverResource);
+            return;
+        }
+        // Backend not deployed yet — read the file locally so the upload
+        // still works end-to-end for demos/testing.
+        const reader = new FileReader();
+        reader.onload = function () {
+            finishUpload({
+                id: resourceIdCounter++,
+                title,
+                subject: subjectSelect.value,
+                level: levelSelect.value,
+                fileName: file.name,
+                fileType: file.type,
+                fileSize: file.size,
+                uploadedBy: currentUser.username,
+                createdAt: new Date().toISOString(),
+                uploadedAt: Date.now(),
+                fileUrl: reader.result
+            });
+        };
+        reader.onerror = function () {
+            if (errorBox) { errorBox.innerText = 'Something went wrong reading that file. Please try again.'; errorBox.classList.remove('hidden'); }
+            if (submitBtn) { submitBtn.disabled = false; submitBtn.innerHTML = '<i class="fa-solid fa-upload mr-1.5"></i>Upload'; }
+        };
+        reader.readAsDataURL(file);
+    }).catch((err) => {
+        if (errorBox) { errorBox.innerText = err.message || 'Upload failed. Please try again.'; errorBox.classList.remove('hidden'); }
+        if (submitBtn) { submitBtn.disabled = false; submitBtn.innerHTML = '<i class="fa-solid fa-upload mr-1.5"></i>Upload'; }
+    });
+}
+async function deleteResource(id) {
+    const resource = resourcesList.find(r => r.id === id);
+    if (!resource) return;
+    const perms = getPermissions(currentUser.role);
+    const canDelete = perms.canDeleteAnyResource || (perms.canManageResources && resource.uploadedBy.toLowerCase() === currentUser.username.toLowerCase());
+    if (!canDelete) return; // RBAC guard
+    if (!confirm(`Delete "${resource.title}"? This cannot be undone.`)) return;
+    try {
+        await ResourcesAPI.remove(id);
+    } catch (err) {
+        alert(err.message || 'Could not delete this resource. Please try again.');
+        return;
+    }
+    await refreshResourcesList();
+    loadResourcesData();
+}
+function loadResourcesData() {
+    const grid = document.getElementById('resource-grid');
+    if (!grid) return;
+    const levelFilter = document.getElementById('resource-level-filter');
+    const searchInput = document.getElementById('resource-search');
+    const level = levelFilter ? levelFilter.value : 'ALL';
+    const query = searchInput ? searchInput.value.trim().toLowerCase() : '';
+
+    let filtered = resourcesList.filter(r => {
+        const matchesLevel = level === 'ALL' || r.level === level || r.level === 'All Levels';
+        const matchesQuery = query === '' || r.title.toLowerCase().includes(query) || r.subject.toLowerCase().includes(query);
+        return matchesLevel && matchesQuery;
+    });
+    filtered = filtered.slice().sort((a, b) => b.uploadedAt - a.uploadedAt);
+
+    if (filtered.length === 0) {
+        const emptyMsg = resourcesList.length === 0
+            ? (currentUser.role !== 'Student' ? 'No resources uploaded yet. Use "+ Upload Resource" to add the first one.' : 'No resources have been shared yet. Check back later.')
+            : 'No resources match your current filter or search.';
+        grid.innerHTML = `<div class="col-span-full bg-white border border-slate-200 rounded-2xl p-10 text-center text-slate-400 text-xs font-semibold">${emptyMsg}</div>`;
+        return;
+    }
+    grid.innerHTML = filtered.map(r => buildResourceCard(r)).join('');
+}
+function buildResourceCard(r) {
+    const perms = getPermissions(currentUser.role);
+    const canDelete = perms.canDeleteAnyResource || (perms.canManageResources && r.uploadedBy.toLowerCase() === currentUser.username.toLowerCase());
+    const fileTypeLabel = getFileTypeLabel(r.fileName);
+    const fileSizeLabel = (typeof r.fileSize === 'number') ? formatFileSize(r.fileSize) : '';
+    const uploadedDate = r.createdAt || r.uploadedAtISO; // uploadedAtISO kept for backward compatibility with any cached local-fallback entries
+    return `
+        <div class="bg-white border border-slate-200 rounded-2xl p-4 shadow-xs flex flex-col gap-3">
+            <div class="flex items-start gap-3">
+                <div class="w-11 h-11 rounded-xl bg-teal-50 border border-teal-100 text-teal-700 flex items-center justify-center text-lg flex-shrink-0">
+                    <i class="fa-solid ${getFileIcon(r.fileName)}"></i>
+                </div>
+                <div class="min-w-0">
+                    <p class="font-bold text-slate-900 text-sm truncate" title="${escapeHTML(r.title)}">${escapeHTML(r.title)}</p>
+                    <p class="text-[11px] font-semibold text-slate-500 truncate">${escapeHTML(r.subject)} &middot; ${escapeHTML(r.level)}</p>
+                </div>
+            </div>
+            <div class="flex flex-wrap gap-1.5">
+                <span class="badge-blue">${fileTypeLabel}</span>
+                ${fileSizeLabel ? `<span class="text-[10px] font-bold text-slate-400 self-center">${fileSizeLabel}</span>` : ''}
+            </div>
+            <div class="text-[10.5px] font-semibold text-slate-400 border-t border-slate-100 pt-2">
+                Uploaded by ${escapeHTML(r.uploadedBy)} &middot; ${formatReportDate(uploadedDate)}
+            </div>
+            <div class="flex gap-2 pt-1">
+                <a href="${r.fileUrl}" download="${escapeHTML(r.fileName)}" target="_blank" rel="noopener" class="flex-1 text-center btn-neu-light text-[11px] font-extrabold uppercase tracking-wider py-2 rounded-lg transition">
+                    <i class="fa-solid fa-download mr-1"></i>Download
+                </a>
+                ${canDelete ? `<button onclick="deleteResource(${r.id})" class="text-rose-600 hover:text-rose-700 text-[11px] font-extrabold uppercase tracking-wider btn-neu-light-danger px-3 py-2 rounded-lg transition-colors"><i class="fa-solid fa-trash mr-1"></i>Delete</button>` : ''}
+            </div>
+        </div>
+    `;
+}
+/* ---------------------------------------------------------
+   9. TEACHER PROFILES & CREDENTIALS MODULE
+   --------------------------------------------------------- */
+function renderTeachersModule() {
+    if (currentUser.role === 'Administrator') {
+        return `
+            <div class="space-y-6">
+                <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white border border-slate-200 p-5 rounded-2xl shadow-xs">
+                    <p class="text-xs font-semibold text-slate-500">Add, remove, or reset login credentials for teacher accounts.</p>
+                    <button onclick="toggleTeacherForm()" class="w-full md:w-auto btn-neu-light text-xs font-extrabold uppercase tracking-wider py-2.5 px-4 rounded-xl transition shadow-xs">
+                        <i class="fa-solid fa-chalkboard-user mr-2"></i>Add New Teacher
+                    </button>
+                </div>
+                <div id="teacher-form-container" class="hidden bg-white border border-slate-200 p-5 rounded-2xl shadow-xs">
+                    <h4 class="text-xs font-extrabold text-teal-700 uppercase tracking-wider mb-3"><i class="fa-solid fa-user-plus mr-2"></i>Register New Teacher</h4>
+                    <form onsubmit="handleAddTeacher(event)" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
+                        <div>
+                            <label class="block text-[11px] font-extrabold text-slate-500 uppercase mb-1">Teacher ID</label>
+                            <input type="text" id="teach-id" placeholder="e.g. T003" required class="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700">
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-extrabold text-slate-500 uppercase mb-1">Full Name</label>
+                            <input type="text" id="teach-name" placeholder="Full name" required class="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700">
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-extrabold text-slate-500 uppercase mb-1">Username</label>
+                            <input type="text" id="teach-username" placeholder="e.g. jsmith" required class="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700">
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-extrabold text-slate-500 uppercase mb-1">Temporary Password</label>
+                            <input type="text" id="teach-password" placeholder="Temporary password" required class="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700">
+                        </div>
+                        <div>
+                            <label class="block text-[11px] font-extrabold text-slate-500 uppercase mb-1">Subject</label>
+                            <input type="text" id="teach-subject" placeholder="e.g. MATHEMATICS" class="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700">
+                        </div>
+                        <div class="sm:col-span-2 md:col-span-4 flex justify-end space-x-2 pt-2">
+                            <button type="button" onclick="toggleTeacherForm()" class="bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-extrabold uppercase py-2 px-4 rounded-xl"><i class="fa-solid fa-xmark mr-1.5"></i>Cancel</button>
+                            <button type="submit" class="btn-neu-light text-xs font-extrabold uppercase py-2 px-4 rounded-xl transition"><i class="fa-solid fa-floppy-disk mr-1.5"></i>Save Teacher</button>
+                        </div>
+                    </form>
+                </div>
+                <div class="overflow-x-auto bg-white border border-slate-200 rounded-2xl shadow-xs">
+                    <table class="w-full text-left border-collapse">
+                        <thead>
+                            <tr class="bg-slate-50 text-slate-500 uppercase text-[10px] font-extrabold tracking-wider border-b border-slate-200">
+                                <th class="p-4">Teacher ID</th>
+                                <th class="p-4">Full Name</th>
+                                <th class="p-4">Username</th>
+                                <th class="p-4">Subject</th>
+                                <th class="p-4">Password</th>
+                                <th class="p-4 text-center">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="teacher-table-body" class="divide-y divide-slate-100 text-xs text-slate-700"></tbody>
+                    </table>
+                </div>
+            </div>
+        `;
+    }
+
+    // Teacher self-service view
+    const me = teachersList.find(t => t.username.toLowerCase() === currentUser.username.toLowerCase());
+    if (!me) {
+        return `<div class="bg-white border border-slate-200 rounded-2xl p-10 text-center text-slate-400 text-sm font-semibold">
+            No teacher profile is linked to the username "${currentUser.username}". Ask your Administrator to create one for you in the Teachers panel.
+        </div>`;
+    }
+    return `
+        <div class="max-w-xl bg-white border border-slate-200 p-6 rounded-2xl shadow-xs space-y-4">
+            <h4 class="text-xs font-extrabold text-teal-700 uppercase tracking-wider"><i class="fa-solid fa-id-badge mr-2"></i>Edit My Profile</h4>
+            <form onsubmit="saveOwnTeacherProfile(event)" class="space-y-4">
+                <div>
+                    <label class="block text-[11px] font-extrabold text-slate-500 uppercase mb-1">Full Name</label>
+                    <input type="text" id="my-teach-name" value="${escapeHTML(me.name)}" required class="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700">
+                </div>
+                <div>
+                    <label class="block text-[11px] font-extrabold text-slate-500 uppercase mb-1">Username</label>
+                    <input type="text" id="my-teach-username" value="${escapeHTML(me.username)}" required class="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700">
+                </div>
+                <div>
+                    <label class="block text-[11px] font-extrabold text-slate-500 uppercase mb-1">New Password</label>
+                    <input type="text" id="my-teach-password" placeholder="Leave blank to keep current password" class="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700">
+                </div>
+                <div>
+                    <label class="block text-[11px] font-extrabold text-slate-500 uppercase mb-1">Subject</label>
+                    <input type="text" id="my-teach-subject" value="${escapeHTML(me.subject || '')}" class="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700">
+                </div>
+                <div>
+                    <label class="block text-[11px] font-extrabold text-slate-500 uppercase mb-1">Initials</label>
+                    <input type="text" id="my-teach-initials" maxlength="4" value="${escapeHTML(me.initials || '')}" placeholder="e.g. JN" class="w-32 p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold uppercase text-slate-700">
+                    <p class="text-[11px] text-slate-400 mt-1">Used to prefill the "TR's Initial" bulk-apply box on the Score Sheets screen — you can still type a different value there per class/subject.</p>
+                </div>
+                <div id="teacher-profile-msg" class="hidden text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2"></div>
+                <div class="flex justify-end pt-2">
+                    <button type="submit" class="btn-neu-light text-xs font-extrabold uppercase py-2 px-4 rounded-xl transition"><i class="fa-solid fa-floppy-disk mr-1.5"></i>Save Changes</button>
+                </div>
+            </form>
+        </div>
+    `;
+}
+function loadTeacherData() {
+    const tbody = document.getElementById('teacher-table-body');
+    if (!tbody) return;
+    tbody.innerHTML = "";
+    if (teachersList.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="6" class="p-6 text-center text-slate-400 text-xs font-medium">No teacher accounts yet.</td></tr>`;
+        return;
+    }
+    tbody.innerHTML = teachersList.map((teacher, index) => `
+            <tr class="hover:bg-slate-50 transition-colors">
+                <td class="p-4 font-mono text-xs font-bold text-teal-700">${teacher.id}</td>
+                <td class="p-4 font-bold text-slate-900">${escapeHTML(teacher.name)}</td>
+                <td class="p-4 text-slate-600 font-semibold">${escapeHTML(teacher.username)}</td>
+                <td class="p-4 text-slate-600 font-semibold">${escapeHTML(teacher.subject || '-')}</td>
+                <td class="p-4 font-mono text-xs text-slate-500" title="Passwords are never shown in plain text once stored securely on the server.">${teacher.password ? teacher.password : '••••••••'}</td>
+                <td class="p-4 text-center space-x-2">
+                    <button onclick="openEditTeacherModal(${index})" class="text-blue-600 hover:text-blue-700 text-[11px] font-extrabold uppercase tracking-wider bg-blue-50 hover:bg-blue-100 px-3 py-1.5 rounded-lg border border-blue-200 transition-colors"><i class="fa-solid fa-pen mr-1"></i>Edit</button>
+                    <button onclick="resetTeacherPassword(${index})" class="text-teal-700 hover:text-teal-800 text-[11px] font-extrabold uppercase tracking-wider bg-teal-50 hover:bg-teal-100 px-3 py-1.5 rounded-lg border border-teal-200 transition-colors"><i class="fa-solid fa-key mr-1"></i>Reset Password</button>
+                    <button onclick="deleteTeacher(${index})" class="text-rose-600 hover:text-rose-700 text-[11px] font-extrabold uppercase tracking-wider btn-neu-light-danger px-3 py-1.5 rounded-lg transition-colors"><i class="fa-solid fa-trash mr-1"></i>Delete</button>
+                </td>
+            </tr>
+        `).join('');
+}
+function toggleTeacherForm() {
+    const formContainer = document.getElementById('teacher-form-container');
+    if (formContainer) formContainer.classList.toggle('hidden');
+}
+async function handleAddTeacher(event) {
+    event.preventDefault();
+    if (!getPermissions(currentUser.role).canManageTeachers) return; // RBAC guard: Administrator only
+    const newTeacher = {
+        id: getInputValue('teach-id').trim().toUpperCase(),
+        name: getInputValue('teach-name').trim(),
+        username: getInputValue('teach-username').trim(),
+        password: getInputValue('teach-password'),
+        subject: getInputValue('teach-subject').toUpperCase()
+    };
+    if (newTeacher.id === '' || newTeacher.name === '' || newTeacher.username === '') {
+        alert('Please fill in Teacher ID, Full Name, and Username.');
+        return;
+    }
+    if (teachersList.some(t => t.id.toUpperCase() === newTeacher.id)) {
+        alert(`Teacher ID "${newTeacher.id}" is already in use. Please choose another.`);
+        return;
+    }
+    if (teachersList.some(t => t.username.toLowerCase() === newTeacher.username.toLowerCase())) {
+        alert('That username is already taken. Please choose another.');
+        return;
+    }
+    try {
+        await TeachersAPI.create(newTeacher);
+    } catch (err) {
+        alert(err.message || 'Could not save this teacher. Please try again.');
+        return;
+    }
+    await refreshTeachersList();
+    toggleTeacherForm();
+    event.target.reset();
+    loadTeacherData();
+}
+async function deleteTeacher(index) {
+    if (!getPermissions(currentUser.role).canManageTeachers) return; // RBAC guard: Administrator only
+    const teacher = teachersList[index];
+    if (!teacher) return;
+    if (!confirm(`Remove ${teacher.name}'s account? This cannot be undone.`)) return;
+    try {
+        await TeachersAPI.remove(teacher.id);
+    } catch (err) {
+        alert(err.message || 'Could not delete this teacher. Please try again.');
+        return;
+    }
+    await refreshTeachersList();
+    loadTeacherData();
+}
+async function resetTeacherPassword(index) {
+    if (!getPermissions(currentUser.role).canManageTeachers) return; // RBAC guard: Administrator only
+    const teacher = teachersList[index];
+    if (!teacher) return;
+    const newPass = prompt(`Enter a new temporary password for ${teacher.name}:`);
+    if (newPass === null || newPass.trim() === "") return;
+    try {
+        await TeachersAPI.resetPassword(teacher.id, newPass.trim());
+    } catch (err) {
+        alert(err.message || 'Could not reset this password. Please try again.');
+        return;
+    }
+    await refreshTeachersList();
+    loadTeacherData();
+}
+// ---------------------------------------------------------
+// Edit Teacher Credentials (Administrator only). Reuses the
+// existing #modal-root + closeModal() pattern (see openStudentProfileModal)
+// and TeachersAPI.update(), which already powers saveOwnTeacherProfile()
+// above — no new API surface needed.
+function openEditTeacherModal(index) {
+    if (!getPermissions(currentUser.role).canManageTeachers) return; // RBAC guard: Administrator only
+    const root = document.getElementById('modal-root');
+    if (!root) return;
+    const teacher = teachersList[index];
+    if (!teacher) return;
+    root.innerHTML = `
+        <div class="fixed inset-0 bg-slate-900/60 flex items-center justify-center z-50 p-4" onclick="if(event.target===this) closeModal()">
+            <div class="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
+                <div class="flex items-center justify-between p-5 border-b border-slate-200">
+                    <h3 class="text-sm font-extrabold text-slate-900"><i class="fa-solid fa-pen mr-2 text-blue-600"></i>Edit Teacher</h3>
+                    <button onclick="closeModal()" class="text-slate-400 hover:text-slate-600 text-lg px-2">&#10005;</button>
+                </div>
+                <form onsubmit="submitEditTeacher(event, '${teacher.id}')" class="p-5 space-y-4">
+                    <div>
+                        <label class="block text-[11px] font-extrabold text-slate-500 uppercase mb-1">Full Name</label>
+                        <input type="text" id="edit-teach-name" value="${escapeHTML(teacher.name)}" required class="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-extrabold text-slate-500 uppercase mb-1">Username</label>
+                        <input type="text" id="edit-teach-username" value="${escapeHTML(teacher.username)}" required class="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700">
+                    </div>
+                    <div>
+                        <label class="block text-[11px] font-extrabold text-slate-500 uppercase mb-1">Password</label>
+                        <input type="text" id="edit-teach-password" placeholder="Leave blank to keep current password" class="w-full p-2.5 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700">
+                    </div>
+                    <div class="flex justify-end space-x-2 pt-2">
+                        <button type="button" onclick="closeModal()" class="bg-slate-200 hover:bg-slate-300 text-slate-700 text-xs font-extrabold uppercase py-2 px-4 rounded-xl"><i class="fa-solid fa-xmark mr-1.5"></i>Cancel</button>
+                        <button type="submit" class="btn-neu-light text-xs font-extrabold uppercase py-2 px-4 rounded-xl transition"><i class="fa-solid fa-floppy-disk mr-1.5"></i>Save Changes</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    `;
+}
+async function submitEditTeacher(event, teacherId) {
+    event.preventDefault();
+    if (!getPermissions(currentUser.role).canManageTeachers) return; // RBAC guard: Administrator only
+    const teacher = teachersList.find(t => t.id === teacherId);
+    if (!teacher) return;
+    const newName = getInputValue('edit-teach-name').trim();
+    const newUsername = getInputValue('edit-teach-username').trim();
+    if (newName === '' || newUsername === '') {
+        alert('Please fill in Full Name and Username.');
+        return;
+    }
+    if (teachersList.some(t => t !== teacher && t.username.toLowerCase() === newUsername.toLowerCase())) {
+        alert('That username is already taken. Please choose another.');
+        return;
+    }
+    const updates = { name: newName, username: newUsername };
+    const newPassword = getInputValue('edit-teach-password').trim();
+    if (newPassword !== "") updates.password = newPassword;
+    try {
+        await TeachersAPI.update(teacher.id, updates);
+    } catch (err) {
+        alert(err.message || 'Could not update this teacher. Please try again.');
+        return;
+    }
+    await refreshTeachersList();
+    closeModal();
+    loadTeacherData();
+}
+async function saveOwnTeacherProfile(event) {
+    event.preventDefault();
+    if (currentUser.role !== 'Teacher') return; // RBAC guard: teachers edit only their own profile
+    const me = teachersList.find(t => t.username.toLowerCase() === currentUser.username.toLowerCase());
+    if (!me) return;
+    const newUsername = getInputValue('my-teach-username').trim();
+    const duplicateUsername = teachersList.some(t => t !== me && t.username.toLowerCase() === newUsername.toLowerCase());
+    if (duplicateUsername) {
+        alert('That username is already taken. Please choose another.');
+        return;
+    }
+    const updates = {
+        name: getInputValue('my-teach-name'),
+        username: newUsername,
+        subject: getInputValue('my-teach-subject').toUpperCase(),
+        initials: getInputValue('my-teach-initials').toUpperCase()
+    };
+    const newPassword = getInputValue('my-teach-password').trim();
+    if (newPassword !== "") updates.password = newPassword;
+
+    try {
+        await TeachersAPI.update(me.id, updates);
+    } catch (err) {
+        alert(err.message || 'Could not update your profile. Please try again.');
+        return;
+    }
+    await refreshTeachersList();
+
+    currentUser.username = newUsername;
+    const userBadge = document.getElementById('user-badge');
+    if (userBadge) userBadge.innerText = `Logged in: ${newUsername}`;
+
+    const msg = document.getElementById('teacher-profile-msg');
+    if (msg) {
+        msg.innerText = "Profile updated successfully.";
+        msg.classList.remove('hidden');
+    }
+}
+/* ---------------------------------------------------------
+   9a2. SUBJECT MARKS STATUS (Administrator & Teacher)
+   Read-only oversight view: for every O-Level subject (S.1-S.4)
+   and A-Level subject (S.5-S.6), shows how many students in each
+   class have had marks recorded (hasRecordedScore() on their
+   marksStorage entry) versus the total enrolled in that class.
+   Purely derived from the same
+   studentsList / marksStorage / oLevelSubjects / aLevelSubjects
+   already used by the Scores and Report Cards modules — no new
+   state, storage key, or API endpoint is introduced.
+   --------------------------------------------------------- */
+const O_LEVEL_STATUS_CLASSES = ['S.1', 'S.2', 'S.3', 'S.4'];
+const A_LEVEL_STATUS_CLASSES = ['S.5', 'S.6'];
+function computeSubjectMarksStatusRow(subject, classLevels) {
+    const cells = classLevels.map(cls => {
+        const studentsInClass = studentsList.filter(s => s.class === cls);
+        const total = studentsInClass.length;
+        const recorded = studentsInClass.filter(s => {
+            const { term, year } = getViewedTermYear();
+            const m = marksStorage[buildScoreRecordKey(subject, s.id, term, year)];
+            // Use hasRecordedScore (real ao1/ao2/eot/p1/p2 field check) instead
+            // of the stale `touched` flag: `touched` is set true the first time
+            // a teacher opens/edits a subject and never gets reset, so it stays
+            // true even after every mark for that subject has been deleted —
+            // which was making deleted subjects still show as "In Progress"
+            // instead of dropping back to "Not Started (0/total)".
+            return m && hasRecordedScore(m);
+        }).length;
+        let status, badgeClass;
+        if (total === 0) { status = 'No Students'; badgeClass = 'bg-slate-100 text-slate-400 border-slate-200'; }
+        else if (recorded === 0) { status = 'Not Started'; badgeClass = 'bg-rose-50 text-rose-600 border-rose-200'; }
+        else if (recorded < total) { status = 'In Progress'; badgeClass = 'bg-green-50 text-green-700 border-green-200'; }
+        else { status = 'Complete'; badgeClass = 'bg-emerald-50 text-emerald-700 border-emerald-200'; }
+        return { cls, recorded, total, status, badgeClass };
+    });
+    return { subject, cells };
+}
+function renderSubjectMarksStatusTable(title, subjects, classLevels) {
+    const rows = subjects.map(subj => computeSubjectMarksStatusRow(subj, classLevels));
+    return `
+        <div class="overflow-x-auto bg-white border border-slate-200 rounded-2xl shadow-xs">
+            <div class="p-4 border-b border-slate-200">
+                <h4 class="text-xs font-extrabold text-teal-700 uppercase tracking-wider">${escapeHTML(title)}</h4>
+            </div>
+            <table class="w-full text-left border-collapse">
+                <thead>
+                    <tr class="bg-slate-50 text-slate-500 uppercase text-[10px] font-extrabold tracking-wider border-b border-slate-200">
+                        <th class="p-4">Subject</th>
+                        ${classLevels.map(cls => `<th class="p-4 text-center">${escapeHTML(cls)}</th>`).join('')}
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-100 text-xs text-slate-700">
+                    ${rows.map(row => `
+                        <tr class="hover:bg-slate-50 transition-colors">
+                            <td class="p-4 font-bold text-slate-900">${escapeHTML(row.subject)}</td>
+                            ${row.cells.map(cell => `
+                                <td class="p-4 text-center">
+                                    <span class="inline-block font-extrabold px-2.5 py-1 rounded-lg text-[10px] border ${cell.badgeClass}" title="${cell.recorded} of ${cell.total} students recorded">
+                                        ${cell.status}${cell.total > 0 ? ` (${cell.recorded}/${cell.total})` : ''}
+                                    </span>
+                                </td>
+                            `).join('')}
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        </div>
+    `;
+}
+function renderSubjectMarksStatusModule() {
+    return `
+        <div class="space-y-6">
+            <div class="bg-white border border-slate-200 p-5 rounded-2xl shadow-xs">
+                <p class="text-xs font-semibold text-slate-500">Shows which subjects have had marks recorded for every class, across both O-Level (S.1-S.4) and A-Level (S.5-S.6).</p>
+            </div>
+            <div id="subject-marks-status-content" class="space-y-6">
+                <p class="text-center text-slate-400 text-xs font-medium py-6">Loading subject marks status&hellip;</p>
+            </div>
+        </div>
+    `;
+}
+function loadSubjectMarksStatusData() {
+    const container = document.getElementById('subject-marks-status-content');
+    if (!container) return;
+    container.innerHTML =
+        renderSubjectMarksStatusTable('O-Level Subjects (S.1 - S.4)', oLevelSubjects, O_LEVEL_STATUS_CLASSES) +
+        renderSubjectMarksStatusTable('A-Level Subjects (S.5 - S.6)', aLevelSubjects, A_LEVEL_STATUS_CLASSES);
+}
+/* ---------------------------------------------------------
+   9b. ADMIN ACTIVITY LOG
+   Read-only view of login events recorded server-side (see
+   lib/activityLog.js + routes/activity-log.routes.js in the
+   backend), fetched fresh every time this tab is opened rather
+   than pre-synced with the other lists — Administrator-only,
+   gated both by ROLE_PERMISSIONS.tabs (api.js) and the backend's
+   own requireRole('Administrator') check.
+   --------------------------------------------------------- */
+function renderActivityLogModule() {
+    return `
+        <div class="space-y-6">
+            <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white border border-slate-200 p-5 rounded-2xl shadow-xs">
+                <p class="text-xs font-semibold text-slate-500">A record of every successful login to this system, most recent first.</p>
+                <div class="w-full md:w-auto flex flex-col sm:flex-row gap-2">
+                    <button onclick="loadActivityLogData()" class="w-full sm:w-auto bg-slate-100 hover:bg-slate-200 text-teal-700 text-xs font-extrabold uppercase tracking-wider py-2.5 px-4 rounded-xl border border-slate-300 transition"><i class="fa-solid fa-rotate-right mr-1.5"></i>Refresh</button>
+                    <button onclick="clearActivityLog()" class="w-full sm:w-auto btn-neu-light-danger text-rose-600 text-xs font-extrabold uppercase tracking-wider py-2.5 px-4 rounded-xl transition"><i class="fa-solid fa-trash mr-1.5"></i>Clear Logs</button>
+                </div>
+            </div>
+            <div class="overflow-x-auto bg-white border border-slate-200 rounded-2xl shadow-xs">
+                <table class="w-full text-left border-collapse">
+                    <thead>
+                        <tr class="bg-slate-50 text-slate-500 uppercase text-[10px] font-extrabold tracking-wider border-b border-slate-200">
+                            <th class="p-4">Username / ID</th>
+                            <th class="p-4">Action Type</th>
+                            <th class="p-4">IP Address</th>
+                            <th class="p-4">Timestamp</th>
+                        </tr>
+                    </thead>
+                    <tbody id="activity-log-table-body" class="divide-y divide-slate-100 text-xs text-slate-700">
+                        <tr><td colspan="4" class="p-6 text-center text-slate-400 text-xs font-medium">Loading activity log&hellip;</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    `;
+}
+// Clears every recorded login event server-side (see ActivityLogAPI.clear
+// in api.js / DELETE /api/activity-log in the backend), then reloads the
+// now-empty table. Gated to Administrator the same way the tab itself is
+// (ROLE_PERMISSIONS.tabs in api.js + the backend's requireRole check), so
+// this button is only ever reachable by an admin in the first place.
+async function clearActivityLog() {
+    if (!confirm('Clear the entire activity log? This cannot be undone.')) return;
+    try {
+        await ActivityLogAPI.clear();
+    } catch (err) {
+        alert(err.message || 'Could not clear the activity log. Please try again.');
+        return;
+    }
+    await loadActivityLogData();
+}
+async function loadActivityLogData() {
+    const tbody = document.getElementById('activity-log-table-body');
+    if (!tbody) return;
+    let entries;
+    try {
+        entries = await ActivityLogAPI.list();
+    } catch (err) {
+        tbody.innerHTML = `<tr><td colspan="4" class="p-6 text-center text-rose-500 text-xs font-semibold">${escapeHTML(err.message || 'Could not load the activity log. Please try again.')}</td></tr>`;
+        return;
+    }
+    if (!Array.isArray(entries) || entries.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="4" class="p-6 text-center text-slate-400 text-xs font-medium">No login activity has been recorded yet.</td></tr>`;
+        return;
+    }
+    // Backend already returns rows ORDER BY created_at DESC — sort again
+    // here defensively so the view stays reverse-chronological even if
+    // that ever changes server-side.
+    const sorted = entries.slice().sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    tbody.innerHTML = sorted.map(entry => `
+            <tr class="hover:bg-slate-50 transition-colors">
+                <td class="p-4 font-bold text-slate-900">${escapeHTML(entry.username || '-')}</td>
+                <td class="p-4 text-slate-600 font-semibold">${escapeHTML(entry.actionType || '-')}</td>
+                <td class="p-4 font-mono text-xs text-slate-500">${escapeHTML(entry.ipAddress || '-')}</td>
+                <td class="p-4 text-slate-600 font-semibold">${formatActivityLogTimestamp(entry.createdAt)}</td>
+            </tr>
+        `).join('');
+}
+function formatActivityLogTimestamp(dateStr) {
+    const d = new Date(dateStr);
+    if (isNaN(d)) return dateStr || '-';
+    const datePart = d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    const timePart = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+    return `${datePart} at ${timePart}`;
+}
+/* ---------------------------------------------------------
+   10. INITIAL PAGE LOAD
+   --------------------------------------------------------- */
+(async function restoreSessionOnLoad() {
+    const savedUser = AuthAPI.getSession();
+    if (savedUser && savedUser.username && savedUser.role) {
+        await applySessionUser(savedUser);
+    } else {
+        renderSidebarNav();
+    }
+})();

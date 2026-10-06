@@ -1,0 +1,3 @@
+# Frontend deploy: don't publish backend source/secrets as public static files
+kss-backend
+.env

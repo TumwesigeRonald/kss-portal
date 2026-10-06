@@ -1,0 +1,239 @@
+const express = require('express');
+const bcrypt = require('bcryptjs');
+const db = require('../db');
+const { authenticate, requireRole } = require('../middleware/auth');
+const asyncHandler = require('../middleware/asyncHandler');
+
+const router = express.Router();
+const HASH_ROUNDS = 10;
+
+// GET /api/students?class=&search=&page=&pageSize=
+// Admin/Teacher: full registry, optionally filtered/paginated. Student:
+// only their own record (defense in depth — the frontend already hides
+// this tab for Students).
+//
+// Pagination is OPT-IN via `page`: omit it and this behaves exactly as
+// before — a plain array of every matching student, no envelope. That's
+// what every existing caller (class-level dropdowns, the Scores/
+// Attendance screens' student pickers, refreshStudentsList()'s full-roster
+// cache, etc.) expects, so none of them need to change. Only the Student
+// Records admin table passes `page`, and gets back
+// { data, total, page, pageSize, totalPages } instead.
+router.get('/', authenticate, asyncHandler(async (req, res) => {
+  if (req.user.role === 'Student') {
+    const { rows } = await db.query('SELECT id, name, class, gender, photo_url AS "photoUrl" FROM students WHERE id = $1', [req.user.studentId]);
+    return res.json(rows);
+  }
+
+  const { class: classLevel, search, page: rawPage, pageSize: rawPageSize } = req.query;
+
+  const conditions = [];
+  const values = [];
+  if (classLevel && classLevel !== 'ALL') {
+    values.push(classLevel);
+    conditions.push(`class = $${values.length}`);
+  }
+  if (search) {
+    values.push(`%${search}%`);
+    conditions.push(`(id ILIKE $${values.length} OR name ILIKE $${values.length})`);
+  }
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  if (rawPage === undefined) {
+    const { rows } = await db.query(
+      `SELECT id, name, class, gender, photo_url AS "photoUrl" FROM students ${where} ORDER BY id`,
+      values
+    );
+    return res.json(rows);
+  }
+
+  // Offset pagination. pageSize is capped at 200 so a malformed/huge
+  // value from the client can't turn this into an unbounded scan.
+  const page = Math.max(1, parseInt(rawPage, 10) || 1);
+  const pageSize = Math.min(200, Math.max(1, parseInt(rawPageSize, 10) || 25));
+  const offset = (page - 1) * pageSize;
+
+  // COUNT(*) OVER() rides along in the same query/index scan instead of
+  // a separate COUNT(*) round-trip, so pagination costs exactly one query.
+  values.push(pageSize, offset);
+  const limitParam = values.length - 1;
+  const offsetParam = values.length;
+  const { rows } = await db.query(
+    `SELECT id, name, class, gender, photo_url AS "photoUrl", COUNT(*) OVER()::int AS "totalCount"
+     FROM students ${where}
+     ORDER BY id
+     LIMIT $${limitParam} OFFSET $${offsetParam}`,
+    values
+  );
+
+  const total = rows.length ? rows[0].totalCount : 0;
+  const data = rows.map(({ totalCount, ...rest }) => rest);
+
+  res.json({
+    data,
+    total,
+    page,
+    pageSize,
+    totalPages: Math.max(1, Math.ceil(total / pageSize))
+  });
+}));
+
+// POST /api/students — Admin only (matches canManageStudents in api.js).
+// Also provisions a login for the student (username = id, default
+// password = id) so they can access the portal immediately.
+router.post('/', authenticate, requireRole('Administrator'), asyncHandler(async (req, res) => {
+  const { id, name, class: className, gender } = req.body || {};
+  if (!id || !name || !className) {
+    return res.status(400).json({ message: 'id, name and class are required.' });
+  }
+
+  const client = await db.getClient();
+  try {
+    await client.query('BEGIN');
+
+    const existing = await client.query('SELECT id FROM students WHERE id = $1', [id]);
+    if (existing.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ message: `A student with ID ${id} already exists.` });
+    }
+
+    await client.query(
+      'INSERT INTO students (id, name, class, gender) VALUES ($1,$2,$3,$4)',
+      [id, name, className, gender || null]
+    );
+
+    const passwordHash = await bcrypt.hash(id, HASH_ROUNDS); // default password = student ID
+    await client.query(
+      `INSERT INTO users (username, password_hash, role, name, student_id)
+       VALUES ($1,$2,'Student',$3,$4)`,
+      [id, passwordHash, name, id]
+    );
+
+    await client.query('COMMIT');
+    res.status(201).json({ id, name, class: className, gender: gender || null });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+}));
+
+// PUT /api/students/:id — Admin only. Edits Student ID, Full Name, Class,
+// and Gender. Student ID is the primary key AND the login username
+// (users.student_id / users.username), and it's embedded in
+// scores.record_key / attendance.record_key ("SUBJECT_studentId" /
+// "date_studentId"). None of those foreign keys are ON UPDATE CASCADE,
+// so a bare `UPDATE students SET id=...` would fail as soon as the
+// student has any scores, attendance, or login history. When the ID
+// changes, this inserts the new row first (so children always have a
+// valid parent to point to), repoints every dependent row, then drops
+// the old row — all inside one transaction. Changing the ID also resets
+// the student's login password to the new ID, matching how a password
+// is assigned on initial registration.
+router.put('/:id', authenticate, requireRole('Administrator'), asyncHandler(async (req, res) => {
+  const currentId = req.params.id;
+  const { id: newId, name, class: className, gender } = req.body || {};
+  if (!newId || !name || !className) {
+    return res.status(400).json({ message: 'id, name and class are required.' });
+  }
+
+  const client = await db.getClient();
+  try {
+    await client.query('BEGIN');
+
+    const existing = await client.query('SELECT id, photo_url FROM students WHERE id = $1', [currentId]);
+    if (!existing.rows.length) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ message: 'Student not found.' });
+    }
+
+    if (newId !== currentId) {
+      const dupeStudent = await client.query('SELECT id FROM students WHERE id = $1', [newId]);
+      if (dupeStudent.rows.length) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ message: `A student with ID ${newId} already exists.` });
+      }
+      const dupeUser = await client.query(
+        'SELECT id FROM users WHERE lower(username) = lower($1) AND student_id IS DISTINCT FROM $2',
+        [newId, currentId]
+      );
+      if (dupeUser.rows.length) {
+        await client.query('ROLLBACK');
+        return res.status(409).json({ message: `Username "${newId}" is already taken.` });
+      }
+
+      // Carries the existing photo_url over onto the new row — an ID
+      // change is a rename, not a fresh student, so a previously
+      // uploaded photo shouldn't silently vanish just because the ID
+      // changed.
+      await client.query(
+        'INSERT INTO students (id, name, class, gender, photo_url) VALUES ($1,$2,$3,$4,$5)',
+        [newId, name, className, gender || null, existing.rows[0].photo_url]
+      );
+      await client.query(
+        `UPDATE scores SET student_id = $1, record_key = REPLACE(record_key, $2, $1) WHERE student_id = $2`,
+        [newId, currentId]
+      );
+      await client.query(
+        `UPDATE attendance SET student_id = $1, record_key = REPLACE(record_key, $2, $1) WHERE student_id = $2`,
+        [newId, currentId]
+      );
+      const passwordHash = await bcrypt.hash(newId, HASH_ROUNDS); // new login password = new Student ID, same as on creation
+      await client.query(
+        `UPDATE users SET student_id = $1, username = $1, name = $2, password_hash = $3 WHERE student_id = $4`,
+        [newId, name, passwordHash, currentId]
+      );
+      await client.query('DELETE FROM students WHERE id = $1', [currentId]);
+    } else {
+      await client.query(
+        'UPDATE students SET name = $1, class = $2, gender = $3 WHERE id = $4',
+        [name, className, gender || null, currentId]
+      );
+      await client.query('UPDATE users SET name = $1 WHERE student_id = $2', [name, currentId]);
+    }
+
+    await client.query('COMMIT');
+    res.json({ id: newId, name, class: className, gender: gender || null });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    if (err.code === '23505') {
+      return res.status(409).json({ message: 'That Student ID or username is already in use.' });
+    }
+    throw err;
+  } finally {
+    client.release();
+  }
+}));
+
+// PUT /api/students/:id/photo — Admin only. Sets (or clears, with
+// photoUrl: null) a student's photo. Deliberately its own tiny endpoint
+// rather than folded into PUT /:id above: that route's job is already
+// the trickiest one in this file (repointing scores/attendance/users
+// when the Student ID itself changes), and a photo update has nothing
+// to do with any of that — it's a single-column write with no
+// transaction, no ID-change branching, no password reset. Keeping it
+// separate means a bug in one can never touch the other.
+//
+// photoUrl is expected to already be a small, pre-resized image (see
+// the client-side resize-before-upload step in script.js) uploaded via
+// the existing POST /api/upload endpoint, which returns the public
+// Blob URL saved here. This route does not upload anything itself.
+router.put('/:id/photo', authenticate, requireRole('Administrator'), asyncHandler(async (req, res) => {
+  const { photoUrl } = req.body || {};
+  const { rowCount, rows } = await db.query(
+    'UPDATE students SET photo_url = $1 WHERE id = $2 RETURNING id, photo_url AS "photoUrl"',
+    [photoUrl || null, req.params.id]
+  );
+  if (!rowCount) return res.status(404).json({ message: 'Student not found.' });
+  res.json(rows[0]);
+}));
+
+// DELETE /api/students/:id — Admin only. Cascades to users/scores/attendance.
+router.delete('/:id', authenticate, requireRole('Administrator'), asyncHandler(async (req, res) => {
+  const { rowCount } = await db.query('DELETE FROM students WHERE id = $1', [req.params.id]);
+  if (!rowCount) return res.status(404).json({ message: 'Student not found.' });
+  res.json({ ok: true });
+}));
+
+module.exports = router;

@@ -1,0 +1,1560 @@
+/* =========================================================================
+   RONTECH SCHOOL SUITE - PORTAL DESIGN SYSTEM
+   5-color, high-contrast palette:
+     1. Black / Dark Charcoal — nav bars, table headers, body text
+     2. White / Light Grey    — content surfaces, card backgrounds
+     3. Red                   — urgent alerts, danger actions, high-priority
+     4. Green                 — success states, active status, confirmation
+     5. Blue                  — hyperlinks, tabs, secondary action buttons
+   Variable NAMES are kept as before (teal-*, navy-*, gold-*, slate-*,
+   rose-*, green-*) so nothing else in this file had to be rewired — only
+   the values they point to changed. "navy-*" now holds the charcoal/black
+   tone instead of the old brand blue. "gold-*" (formerly amber) is
+   repurposed to the same neutral charcoal/grey and is only ever used on
+   LIGHT surfaces (badges, decorative borders on white cards); the handful
+   of spots that used gold as an accent on a DARK background (login hero,
+   sidebar) were switched to an explicit blue accent instead so they stay
+   readable — see the comments at those rules further down this file.
+   ========================================================================= */
+:root {
+    /* Blue — hyperlinks, tabs, secondary action buttons */
+    --teal-900: #1e3a8a;
+    --teal-800: #1d4ed8;
+    --teal-700: #2563eb;
+    --teal-600: #60a5fa;
+    --teal-100: #dbeafe;
+    --teal-50:  #eff6ff;
+    /* Black / Dark Charcoal — navigation bars, main table headers, body text */
+    --navy-900: #18181b;
+    --navy-700: #3f3f46;
+    /* Neutral accent (formerly amber/gold) — repurposed to charcoal/grey;
+       used only on light surfaces, never on a dark background */
+    --gold-600: #27272a;
+    --gold-100: #e4e4e7;
+    /* White / Light Grey — content surfaces, card containers, and the true
+       (non blue-tinted) neutral text/border scale */
+    --slate-900:#18181b;
+    --slate-700:#3f3f46;
+    --slate-500:#71717a;
+    --slate-300:#d4d4d8;
+    --slate-100:#f4f4f5;
+    --slate-50: #fafafa;
+    /* Red — urgent alerts, danger actions, high-priority indicators */
+    --rose-600: #dc2626;
+    --rose-700: #b91c1c;
+    --rose-100: #fee2e2;
+    /* Green — success states, active statuses, confirmation buttons */
+    --green-700:#15803d;
+    --green-100:#dcfce7;
+    --font-display: 'Fraunces', Georgia, serif;
+    --font-body: 'Inter', -apple-system, sans-serif;
+    --radius: 14px;
+}
+* { box-sizing: border-box; }
+html, body {
+    max-width: 100%;
+    overflow-x: hidden;
+}
+body {
+    font-family: var(--font-body);
+    background: var(--slate-50);
+    color: var(--slate-900);
+    margin: 0;
+}
+/* Safety net: no form control, image, or icon should be able to force the
+   page wider than the viewport, even if a fixed Tailwind width class (e.g.
+   w-64) is used in a template. This never shrinks things below their
+   container's available space, it only stops them exceeding it. */
+input, select, textarea, button {
+    max-width: 100%;
+}
+img {
+    max-width: 100%;
+    height: auto;
+}
+.hidden { display: none !important; }
+/* ---------------- LOGIN PAGE — DARK HERO / NEUMORPHIC CARD ----------------
+   Two-pane layout: a full-height campus photo on the left with a dark
+   gradient overlay (Tailwind utility classes on a child div in
+   index.html — bg-gradient-to-b from-black/70 via-black/50 to-black/80)
+   for legible white text, and a dark neumorphic "soft UI" login card on
+   the right. Color/background/border/shadow for the card, inputs, and
+   button are intentionally NOT set here — they're applied as Tailwind
+   utility classes directly in index.html (per the requested design spec)
+   so they aren't fighting this stylesheet for cascade order. This file
+   only keeps the structural CSS that has no clean Tailwind utility
+   equivalent (the background-image, the two-pane flex layout, fluid
+   type sizing) plus the small text-color tweaks needed for legibility
+   against the new dark card. */
+.login-shell {
+    position: relative;
+    min-height: 100vh;
+    min-height: 100dvh;
+    display: flex;
+    background: #14161b;
+}
+.login-visual {
+    position: relative;
+    flex: 1 1 58%;
+    min-width: 0;
+    overflow: hidden;
+    /* Drop a photo named school_building.jpg next to index.html to show it here; until then the gradient is used. */
+    background-image: url('school_building.jpg'), linear-gradient(135deg, #0f2f1f 0%, #14532d 55%, #18181b 100%);
+    background-size: cover;
+    background-position: center;
+}
+/* The dark gradient overlay itself is the Tailwind
+   `absolute inset-0 bg-gradient-to-b from-black/70 via-black/50 to-black/80`
+   div placed inside .login-visual in index.html — nothing to style here. */
+.login-visual-content {
+    position: relative;
+    z-index: 10;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 64px 72px;
+    color: #ffffff;
+    text-align: center;
+}
+.login-eyebrow {
+    font-family: var(--font-body);
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    font-size: 12px;
+    font-weight: 800;
+    color: #ff8a68;
+    margin-bottom: 18px;
+}
+.login-visual h1 {
+    font-family: var(--font-display);
+    font-size: clamp(26px, 3.2vw, 42px);
+    line-height: 1.22;
+    margin: 0 0 18px 0;
+    max-width: 560px;
+    color: #ffffff;
+}
+.login-visual p.tagline {
+    font-size: 15px;
+    color: #e8e3d6;
+    max-width: 460px;
+    line-height: 1.7;
+    margin: 0;
+}
+.login-motto {
+    margin-top: 32px;
+    padding-top: 16px;
+    border-top: 1px solid rgba(255,255,255,0.25);
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 17px;
+    color: #f2c14e;
+    max-width: 320px;
+    text-align: center;
+    align-self: center;
+}
+.login-panel-wrap {
+    flex: 1 1 42%;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 48px;
+    /* Same dark family as the card itself — genuine neumorphism needs the
+       card's raised light/dark shadow pair to be derived from the surface
+       it sits on, so this can't be a light/cream color anymore. */
+    background: #14161b;
+}
+/* Background/border-radius/box-shadow are the Tailwind classes on the
+   element in index.html (bg-[#1e222b] rounded-[28px] border border-white/5
+   shadow-[...]) — only padding/sizing lives here. */
+.login-card {
+    width: 100%;
+    max-width: 380px;
+    padding: 40px 36px;
+}
+.login-badge-row {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin-bottom: 28px;
+}
+.login-badge-row img {
+    width: 60px; height: 60px;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 1px solid rgba(255,255,255,0.12);
+    flex-shrink: 0;
+}
+/* Selector targets h3 to match the heading element used in index.html. */
+.login-badge-row h3 {
+    font-family: 'Playfair Display', var(--font-display), Georgia, serif;
+    font-size: clamp(26px, 5.5vw, 34px);
+    line-height: 1.1;
+    margin: 0;
+    font-weight: 800;
+    letter-spacing: 0.01em;
+    background: linear-gradient(90deg, #ffffff 0%, #a7f3d0 55%, #6ee7b7 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: #f1f5f9; /* fallback */
+    text-shadow: 0 2px 14px rgba(110,231,183,0.25);
+}
+.login-badge-row span {
+    display: block;
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    font-weight: 800;
+    color: #8b93a3;
+    margin-top: 6px;
+}
+.field-label {
+    display: block;
+    font-size: 10.5px;
+    font-weight: 800;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #8b93a3;
+    margin-bottom: 8px;
+}
+/* Background/border/text/placeholder/shadow are Tailwind utility classes
+   on the input itself in index.html (the inset shadow that makes it look
+   "carved into" the card, per the requested design) — only the sizing/
+   radius/transition structure lives here. */
+.control-input, .control-select {
+    width: 100%;
+    padding: 13px 16px;
+    border-radius: 12px;
+    font-size: 14px;
+    font-weight: 500;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    font-family: var(--font-body);
+}
+/* Chrome/Safari/Edge repaint a remembered/suggested username or password
+   field with their own pale-yellow autofill background, ignoring the
+   dark bg-[#0d1f16] Tailwind class on the input in index.html — that's
+   the "yellow input" bug. The only reliable fix is layering an inset
+   box-shadow large enough to fully cover the field in the theme's own
+   dark green, painted UNDER the browser's text (autofill fires this at
+   a higher priority than a plain background-color override). Also forces
+   the autofilled text/caret back to light grey so it stays readable, and
+   pushes the (very long) background-color transition Chrome applies to
+   autofilled fields out past any reasonable interaction so it never
+   visibly fades in. */
+.control-input:-webkit-autofill,
+.control-input:-webkit-autofill:hover,
+.control-input:-webkit-autofill:focus,
+.control-input:-webkit-autofill:active {
+    -webkit-text-fill-color: #f1f5f9;
+    caret-color: #f1f5f9;
+    -webkit-box-shadow: 0 0 0px 1000px #0d1f16 inset, inset 0 2px 4px rgba(0,0,0,0.65);
+    box-shadow: 0 0 0px 1000px #0d1f16 inset, inset 0 2px 4px rgba(0,0,0,0.65);
+    transition: background-color 600000s ease-in-out 0s, color 600000s ease-in-out 0s;
+}
+.login-field { margin-bottom: 20px; }
+/* Sizing/typography only — the raised gradient + soft shadow (and the
+   hover/active "pressed into the surface" swap) are Tailwind classes on
+   the button in index.html. */
+.login-submit {
+    width: 100%;
+    padding: 15px;
+    font-weight: 800;
+    font-size: 12px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    border: none;
+    cursor: pointer;
+    transition: transform 0.1s ease, box-shadow 0.15s ease;
+}
+.login-submit:active { transform: translateY(1px); }
+.login-error {
+    background: rgba(220,38,38,0.14);
+    color: #fca5a5;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 10px 14px;
+    border-radius: 8px;
+    margin-bottom: 16px;
+    border: 1px solid rgba(248,113,113,0.3);
+}
+.login-footer-note {
+    margin-top: 24px;
+    padding-top: 18px;
+    border-top: 1px solid rgba(255,255,255,0.08);
+    text-align: center;
+    font-size: 10px;
+    font-weight: 700;
+    color: #6b7280;
+}
+.login-footer-note span { color: #9ca3af; }
+/* ---------------- DASHBOARD SHELL ---------------- */
+.app-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: #fff;
+    border-bottom: 1px solid var(--slate-100);
+    padding: 16px 26px;
+    padding-top: 16px;
+    padding-top: calc(16px + env(safe-area-inset-top));
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+}
+.header-left { display: flex; align-items: center; gap: 16px; }
+.icon-btn {
+    background: #eff6ff;
+    border: 1px solid #dbeafe;
+    color: #2563eb;
+    padding: 9px;
+    border-radius: 10px;
+    cursor: pointer;
+    display: flex;
+}
+.page-title {
+    font-family: var(--font-display);
+    font-size: 19px;
+    color: var(--navy-900);
+    margin: 0;
+}
+.header-right { display: flex; align-items: center; gap: 14px; }
+.user-badge {
+    font-size: 11.5px;
+    font-weight: 700;
+    background: var(--teal-50);
+    color: var(--teal-800);
+    padding: 7px 14px;
+    border-radius: 999px;
+    border: 1px solid var(--teal-100);
+}
+.role-tag {
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--gold-600);
+    background: var(--gold-100);
+    padding: 5px 10px;
+    border-radius: 999px;
+}
+
+.logout-btn {
+    background: var(--rose-600);
+    color: #fff;
+    border: none;
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 9px 16px;
+    border-radius: 8px;
+    cursor: pointer;
+}
+.logout-btn:hover { background: #b91c1c; }
+.app-body { display: flex; flex: 1; position: relative; overflow: hidden; }
+.sidebar-backdrop {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.45);
+    z-index: 40;
+}
+.sidebar {
+    position: absolute;
+    inset: 0 auto 0 0;
+    z-index: 50;
+    width: 256px;
+    max-width: 84vw;
+    background: var(--navy-900);
+    color: #bfdbfe;
+    display: flex;
+    flex-direction: column;
+    /* Open (visible) by default; the .-translate-x-full toggle class is what
+       slides it off-screen. Previously this base rule hardcoded -100%, which
+       meant removing the toggle class on mobile had no visible effect and the
+       hamburger menu appeared to do nothing. */
+    transform: translateX(0);
+    transition: transform 0.3s ease;
+    box-shadow: 4px 0 24px rgba(0,0,0,0.15);
+}
+.sidebar.-translate-x-full {
+    transform: translateX(-100%);
+}
+@media (max-width: 767px) {
+    /* On mobile the drawer must cover the FULL viewport height (including
+       the area behind the header), not just the height of .app-body — so
+       it's pinned to the viewport via `fixed` + top:0 instead of being
+       positioned relative to .app-body's (0,0), which starts below the
+       header and left the top of the drawer looking cut off. */
+    .sidebar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        height: 100dvh;
+        /* Narrower on phones so the drawer doesn't swallow the whole
+           screen — capped at 300px even on larger phones/small tablets. */
+        width: 75%;
+        max-width: 300px;
+    }
+    /* The drawer is pinned to the raw viewport here (unlike desktop, where
+       it docks below .app-header, which already has its own safe-area
+       padding) — so its own header needs the inset to clear the iPhone
+       status bar/notch itself. Plain px first as a fallback for browsers
+       without env() support. */
+    .sidebar-brand {
+        padding-top: 20px;
+        padding-top: calc(20px + env(safe-area-inset-top));
+    }
+}
+@media (min-width: 768px) {
+    /* Desktop collapse: instead of sliding as an overlay (mobile's
+       transform: translateX(-100%), which would just leave a blank
+       256px gap here since the sidebar stays `position: relative` — a
+       real flex item — on desktop), the panel collapses its own width
+       to 0 so .main-content (flex: 1 in the same .app-body flex row)
+       reflows to fill the freed space, giving a genuine full-width view
+       rather than something merely hidden behind an overlay. The
+       `transform: none` cancels the global slide rule above so width is
+       the only thing animating here. No backdrop is needed for the same
+       reason, so it stays hidden on desktop regardless of toggle state. */
+    .sidebar { position: relative; width: 256px; transition: width 0.3s ease; }
+    .sidebar.-translate-x-full {
+        width: 0;
+        min-width: 0;
+        transform: none;
+        overflow: hidden;
+        box-shadow: none;
+    }
+    .sidebar-backdrop { display: none !important; }
+}
+.sidebar-brand {
+    padding: 20px;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0; /* frozen header block — never shrinks/scrolls, see .sidebar-nav's own scroll below */
+}
+.sidebar-brand-inner { display: flex; align-items: center; gap: 12px; }
+/* Blue border (not var(--gold-600)/charcoal) — this sits on the dark
+   charcoal sidebar background, so it needs a bright accent to be visible. */
+.sidebar-brand img { width: 40px; height: 40px; border-radius: 50%; object-fit: cover; border: 2px solid #60a5fa; }
+.sidebar-brand h3 { margin: 0; font-size: 12.5px; font-weight: 800; color: #fff; }
+.sidebar-brand p { margin: 2px 0 0; font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--teal-600); }
+.sidebar-close { background: none; border: none; color: #93c5fd; cursor: pointer; font-size: 14px; }
+/* Academic Term/Year switcher (sidebar) — see #sidebar-term-switcher in
+   index.html + renderTermSwitcher()/handleTermSwitcherChange() in
+   script.js. Sits between the brand block and the nav links, so it reads
+   as a persistent "context" control rather than just another menu item. */
+.sidebar-term-switcher {
+    padding: 14px 20px;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    flex-shrink: 0; /* frozen header block, alongside .sidebar-brand — see .sidebar-nav's own scroll below */
+}
+.sidebar-term-switcher-label {
+    display: block;
+    font-size: 9.5px;
+    font-weight: 800;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--teal-600);
+    margin-bottom: 8px;
+}
+/* Dark Neumorphic inset — wraps the term/year filter fields so the whole
+   control reads as one recessed panel carved into the sidebar, matching
+   the nav rows below it. See .sidebar-term-select for the fields inside. */
+.sidebar-term-switcher-row {
+    display: flex;
+    gap: 8px;
+    background: #16171b;
+    border-radius: 10px;
+    padding: 6px;
+    box-shadow: inset 2px 2px 6px rgba(0,0,0,0.6), inset -2px -2px 5px rgba(255,255,255,0.03);
+}
+.sidebar-term-select {
+    flex: 1;
+    min-width: 0;
+    /* Dark Neumorphic inset: own slightly-lighter surface than the
+       .sidebar-term-switcher-row tray it sits in, carved in with a dual
+       inset shadow (dark top-left, faint highlight bottom-right) so it
+       reads as a pressed field rather than a flat dropdown. */
+    background: #18191c;
+    border: 1px solid transparent;
+    box-shadow: inset 2px 2px 5px rgba(0,0,0,0.7), inset -2px -2px 5px rgba(255,255,255,0.03);
+    color: #fff;
+    font-size: 11.5px;
+    font-weight: 700;
+    padding: 8px 24px 8px 10px;
+    border-radius: 8px;
+    cursor: pointer;
+    outline: none;
+    -webkit-appearance: none;
+    -moz-appearance: none;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6' fill='none'%3E%3Cpath d='M1 1L5 5L9 1' stroke='%233b82f6' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+    transition: background-color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.sidebar-term-select:hover {
+    background-color: #1e1f24;
+    box-shadow: inset 2px 2px 6px rgba(0,0,0,0.75), inset -2px -2px 5px rgba(255,255,255,0.05);
+}
+/* Focus keeps the same carved-in surface but adds the palette's blue
+   accent as a thin outer ring (rather than flattening the inset), so the
+   field stays high-contrast and clearly "selected" without losing the
+   pressed look established above. */
+.sidebar-term-select:focus {
+    background-color: #1e1f24;
+    border-color: #60a5fa;
+    box-shadow: inset 2px 2px 6px rgba(0,0,0,0.75), inset -2px -2px 5px rgba(255,255,255,0.05), 0 0 0 1px rgba(96,165,250,0.55);
+}
+.sidebar-term-select option {
+    /* Native <select> options render outside our theme's control on most
+       browsers/OSes, but a dark background keeps them legible on the ones
+       that do respect it, instead of near-invisible white-on-white. */
+    background: var(--navy-900);
+    color: #fff;
+}
+.sidebar-term-reset {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    margin-top: 10px;
+    background: none;
+    border: none;
+    color: #93c5fd;
+    font-size: 10.5px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    cursor: pointer;
+    padding: 0;
+}
+.sidebar-term-reset:hover { color: #fff; }
+/* ---------------------------------------------------------------------
+   DARK NEUMORPHIC "RAISED" BUTTON — shared skin for standalone action
+   buttons/chips on a dark surface (sidebar today; reuse on any future
+   dark-surface control by adding this class alongside a layout-only
+   class for width/padding/etc., same pattern as .sidebar-term-load and
+   .sidebar-footer span below). Resting state looks extruded off the
+   panel; :active flips to an inset shadow so pressing it gives real
+   tactile feedback instead of just a color change.
+   NOT used on .sidebar-nav buttons — those are deliberately kept inset
+   (pressed-in) at rest so the raised buttons read as the app's distinct
+   "do something now" affordance, with the active-tab glow still the
+   only element allowed to sit flush/flat between the two states.
+   --------------------------------------------------------------------- */
+.btn-neu-raised {
+    background: #18191c;
+    border: none;
+    color: #93c5fd;
+    border-radius: 10px;
+    box-shadow: 4px 4px 10px rgba(0,0,0,0.7), -2px -2px 6px rgba(255,255,255,0.03);
+    transition: box-shadow 0.12s ease, background-color 0.12s ease, color 0.12s ease, transform 0.05s ease;
+}
+button.btn-neu-raised { cursor: pointer; }
+.btn-neu-raised:hover {
+    background: #1e1f24;
+    color: #fff;
+}
+button.btn-neu-raised:active {
+    box-shadow: inset 3px 3px 8px rgba(0,0,0,0.75), inset -2px -2px 6px rgba(255,255,255,0.04);
+    transform: translateY(1px);
+}
+/* "Jah Bless" — distinct neutral gray surface variant of the shared dark
+   neumorphic raised button above, so the sidebar footer chip doesn't
+   read as the same "do something now" affordance as Load Term below it
+   (which now carries its own maroon surface — see .sidebar-term-load).
+   Same raised/pressed shadow mechanic, just tuned to this lighter,
+   more neutral gray base. Typography/padding still come from
+   .sidebar-footer span. */
+.btn-neu-raised-gray {
+    background: #2a2c33;
+    color: #93c5fd;
+    box-shadow: 4px 4px 10px rgba(0,0,0,0.5), -2px -2px 6px rgba(255,255,255,0.05);
+}
+.btn-neu-raised-gray:hover {
+    background: #32353d;
+    color: #fff;
+}
+/* "Load Term" — a real filled action button (unlike the plain-text "Back
+   to current term" link below it), since it's the explicit trigger that
+   commits whatever's currently picked in the two <select>s above. Nothing
+   re-fetches/re-renders on dropdown change alone; see loadSelectedTerm()
+   in script.js. Layout/spacing/typography come from .btn-neu-raised's
+   companion rule below; the maroon surface here overrides that shared
+   dark-neutral skin so Load Term matches the panel's heading/"Viewing
+   Term" label color (--teal-600) instead of blending into the sidebar.
+   Shadow uses the theme's deepest maroon (--teal-900, as rgb) for the
+   bottom-right shadow so the depth reads as coming from this colored
+   surface rather than plain black, with a soft warm highlight top-left. */
+.sidebar-term-load {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    width: 100%;
+    margin-top: 10px;
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 9px 10px;
+    cursor: pointer;
+    background: var(--teal-600);
+    color: #fff;
+    box-shadow: 4px 4px 10px rgba(61,16,16,0.55), -2px -2px 6px rgba(255,255,255,0.12);
+}
+.sidebar-term-load:hover {
+    background: var(--teal-700);
+    color: #fff;
+}
+button.sidebar-term-load:active {
+    box-shadow: inset 3px 3px 8px rgba(61,16,16,0.6), inset -2px -2px 6px rgba(255,255,255,0.1);
+}
+/* Scrollable nav (flex:1 fills whatever space is left below the frozen
+   header/above the footer; min-height:0 is required for a flex child to
+   actually shrink and scroll instead of growing to fit its content). */
+.sidebar-nav { padding: 16px; display: flex; flex-direction: column; gap: 6px; flex: 1; overflow-y: auto; min-height: 0; }
+/* Section headings inside the scrollable nav (renderSidebarNav in
+   script.js) — sticky so each one stays pinned at the top of the nav's
+   own scrollport while its items scroll underneath, with a solid
+   background matching the sidebar so items don't visibly bleed through
+   above it. */
+.sidebar-nav-heading {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--navy-900);
+    padding: 6px 4px;
+    margin: 0 -4px;
+    font-size: 9.5px;
+    font-weight: 800;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--teal-600);
+}
+/* Belt-and-braces: guarantees every nav item's icon + label stay left-aligned
+   inside the sidebar regardless of which state class script.js applies,
+   overriding the browser's default centered text-align on <button>. */
+.sidebar-nav button { text-align: left; }
+.nav-link {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 11px 15px;
+    border-radius: 10px;
+    font-size: 12px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: #93c5fd;
+    text-decoration: none;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+.nav-link:hover { background: rgba(59,130,246,0.25); color: #fff; }
+.nav-link-active { background: var(--teal-700); color: #fff; }
+.sidebar-footer { padding: 16px; border-top: 1px solid rgba(255,255,255,0.08); text-align: center; flex-shrink: 0; }
+/* Text/typography only now — background, border, radius, and color all
+   come from the shared .btn-neu-raised skin (see above) so this chip
+   matches Load Term's raised surface instead of its old translucent-blue
+   pill treatment. */
+.sidebar-footer span {
+    display: inline-block; font-size: 10px; font-weight: 800; letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 5px 12px;
+}
+.term-pill {
+    margin: 0 16px 16px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: rgba(255,255,255,0.06);
+    font-size: 10.5px;
+    font-weight: 700;
+    color: #bfdbfe;
+    text-align: center;
+    letter-spacing: 0.05em;
+}
+.main-content { flex: 1; overflow-y: auto; padding: 26px; display: flex; flex-direction: column; justify-content: space-between; }
+.metrics-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+@media (max-width: 900px) { .metrics-grid { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 560px) { .metrics-grid { grid-template-columns: 1fr; } }
+.metric-card {
+    background: #fff;
+    border: 1px solid var(--slate-100);
+    border-radius: 16px;
+    padding: 18px 20px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+}
+.metric-label { font-size: 10.5px; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase; color: #1d4ed8; }
+.metric-row { display: flex; align-items: baseline; justify-content: space-between; margin-top: 10px; }
+.metric-value { font-family: var(--font-display); font-size: 30px; color: var(--navy-900); }
+.metric-icon {
+    width: 32px; height: 32px; border-radius: 10px; background: #eff6ff;
+    border: 1px solid #dbeafe; color: #2563eb;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; font-weight: 800;
+}
+.app-footer { margin-top: 40px; text-align: center; border-top: 1px solid var(--slate-100); padding: 18px 0 4px; }
+.app-footer p { font-size: 10px; font-weight: 700; color: var(--slate-500); }
+.app-footer span { color: var(--teal-700); font-weight: 800; }
+/* ---------------- PANELS / TABLES / FORMS (shared) ---------------- */
+.panel-card { background: #fff; border: 1px solid var(--slate-100); border-radius: 18px; padding: 26px; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
+.panel-header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 14px; margin-bottom: 22px; padding-bottom: 16px; border-bottom: 1px solid var(--slate-100); }
+.panel-title { font-family: var(--font-display); font-size: 17px; color: var(--navy-900); margin: 0; }
+.panel-subtitle { font-size: 12px; color: var(--slate-500); font-weight: 600; margin: 4px 0 0; }
+.panel-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.panel-footer { margin-top: 20px; display: flex; justify-content: flex-end; }
+.btn-primary, .btn-accent, .btn-danger-sm {
+    border: none; cursor: pointer; font-family: var(--font-body);
+    font-weight: 800; text-transform: uppercase; letter-spacing: 0.04em;
+    border-radius: 10px; transition: background 0.15s ease, transform 0.1s ease;
+}
+.btn-primary { background: var(--teal-700); color: #fff; font-size: 11.5px; padding: 11px 18px; }
+.btn-primary:hover { background: var(--teal-800); }
+.btn-accent { background: var(--gold-600); color: #fff; font-size: 11.5px; padding: 11px 18px; }
+.btn-accent:hover { background: #3f3f46; }
+.btn-danger-sm { background: var(--rose-100); color: var(--rose-700); font-size: 10px; padding: 6px 12px; border: 1px solid rgba(220,38,38,0.25); }
+.btn-danger-sm:hover { background: #fecaca; }
+/* ---------------------------------------------------------------------
+   LIGHT NEUMORPHIC "RAISED" BUTTON — companion to .btn-neu-raised (dark,
+   used on the sidebar) for the app's white/light panels: Finance,
+   Payroll, Students, Scores, Report Cards, Resources, Staff, etc. Same
+   mechanic — extruded at rest, inset on press for tactile feedback —
+   tuned for a light base since a near-black button would clash on a
+   white .panel-card. These replace what used to be solid Tailwind fills
+   (bg-teal-600/blue-600/amber-500/emerald-600 + text-white, or the pale
+   bg-rose-50 delete-button recipe) hardcoded inline across finance.js,
+   payroll.js, script.js, staff-management.js, and class-summaries.js.
+   Each variant keeps its original color as the TEXT/icon instead of a
+   solid fill, so Save/Record/Generate (blue), Print/Export (amber),
+   confirm (emerald), and Delete (rose, via its own existing text-rose-*
+   Tailwind classes) all stay visually distinguishable on the same
+   neutral raised surface. */
+.btn-neu-light,
+.btn-neu-light-accent,
+.btn-neu-light-success,
+.btn-neu-light-danger {
+    box-shadow: 4px 4px 10px rgba(0,0,0,0.12), -4px -4px 10px rgba(255,255,255,0.9);
+    transition: box-shadow 0.12s ease, background-color 0.12s ease, color 0.12s ease, transform 0.05s ease;
+}
+button.btn-neu-light,
+button.btn-neu-light-accent,
+button.btn-neu-light-success,
+button.btn-neu-light-danger {
+    cursor: pointer;
+}
+button.btn-neu-light:active,
+button.btn-neu-light-accent:active,
+button.btn-neu-light-success:active,
+button.btn-neu-light-danger:active {
+    box-shadow: inset 3px 3px 6px rgba(0,0,0,0.16), inset -3px -3px 6px rgba(255,255,255,0.9);
+    transform: translateY(1px);
+}
+/* Standard app buttons (Bulk Import, Add New Student, and the other
+   primary Save/Record/Generate actions across finance.js, payroll.js,
+   script.js, staff-management.js, class-summaries.js that share this
+   class) — restored to a filled blue surface instead of the pale-gray
+   "color as text" treatment above, while keeping the raised neumorphic
+   depth. The shared box-shadow above was tuned for a near-white base,
+   so a filled blue surface needs its own contrast: a darker bottom-
+   right shadow to stay legible against the panel, and a softer,
+   lower-opacity top-left highlight (full-white at 0.9 opacity would
+   just look like a glare on a colored button). */
+.btn-neu-light {
+    background: #2563eb;
+    color: #fff;
+    box-shadow: 4px 4px 10px rgba(0,0,0,0.25), -4px -4px 10px rgba(255,255,255,0.35);
+}
+.btn-neu-light:hover { background: #1d4ed8; color: #fff; }
+button.btn-neu-light:active {
+    box-shadow: inset 3px 3px 6px rgba(0,0,0,0.3), inset -3px -3px 6px rgba(255,255,255,0.22);
+}
+.btn-neu-light-accent { background: #f5f1e8; color: #b45309; }
+.btn-neu-light-accent:hover { background: #ede6d6; color: #92400e; }
+.btn-neu-light-success { background: #eaf3ee; color: #047857; }
+.btn-neu-light-success:hover { background: #dfeee5; color: #036049; }
+/* No color set here on purpose — these buttons already carry their own
+   text-rose-600 hover:text-rose-700 Tailwind classes inline, so the red
+   text keeps working untouched; this class only supplies the neumorphic
+   surface/shadow. Smaller shadow values since these are compact inline
+   row actions (Delete, Clear Logs), not full-width panel buttons. */
+.btn-neu-light-danger {
+    background: #f6ecec;
+    box-shadow: 3px 3px 7px rgba(0,0,0,0.1), -3px -3px 7px rgba(255,255,255,0.85);
+}
+.btn-neu-light-danger:hover { background: #efe0e0; }
+button.btn-neu-light-danger:active {
+    box-shadow: inset 2px 2px 5px rgba(0,0,0,0.14), inset -2px -2px 5px rgba(255,255,255,0.85);
+}
+.form-panel { background: var(--teal-50); border: 1px solid var(--teal-100); border-radius: 14px; padding: 18px; margin-bottom: 22px; }
+.form-panel-title { margin: 0 0 12px; font-size: 12.5px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.06em; color: #1e40af; }
+.form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; align-items: end; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.mt-2 { margin-top: 8px; } .mt-6 { margin-top: 24px; } .mb-3 { margin-bottom: 12px; }
+.combination-fields { grid-column: 1 / -1; background: #fff; border: 1px dashed var(--teal-600); border-radius: 10px; padding: 14px; }
+.assign-block { grid-column: 1 / -1; }
+.checkbox-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+.checkbox-pill {
+    font-size: 11px; font-weight: 700; background: #fff; border: 1px solid var(--slate-300);
+    padding: 7px 12px; border-radius: 999px; display: flex; align-items: center; gap: 6px; cursor: pointer;
+}
+.table-scroll { overflow-x: auto; }
+.data-table { width: 100%; border-collapse: collapse; text-align: left; font-size: 12px; }
+.data-table thead tr { background: var(--slate-100); }
+.data-table th { padding: 12px; font-size: 10.5px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; color: var(--slate-700); }
+.data-table td { padding: 12px; border-top: 1px solid var(--slate-100); font-weight: 600; color: var(--slate-700); }
+.text-right { text-align: right; } .text-center { text-align: center; }
+.empty-cell { padding: 34px; text-align: center; color: var(--slate-500); font-weight: 700; }
+.cell-id { font-weight: 800; color: var(--teal-700); }
+.cell-name { font-weight: 800; color: var(--navy-900); }
+.cell-total { font-weight: 800; color: var(--teal-700); }
+.cell-grade { font-weight: 800; color: var(--green-700); }
+.badge-blue { background: var(--teal-50); color: var(--teal-700); border: 1px solid var(--teal-100); padding: 4px 10px; border-radius: 6px; font-size: 10px; font-weight: 800; }
+.badge-green { background: var(--green-100); color: var(--green-700); border: 1px solid rgba(21,128,61,0.2); padding: 4px 10px; border-radius: 6px; font-size: 10px; font-weight: 800; }
+.score-input { width: 66px; padding: 6px; text-align: center; border: 1px solid var(--slate-300); border-radius: 8px; font-weight: 700; }
+.score-input:disabled { background: var(--slate-100); color: var(--slate-500); }
+.term-status-card { display: flex; gap: 26px; background: var(--teal-50); border: 1px solid var(--teal-100); border-radius: 14px; padding: 20px; margin-bottom: 22px; }
+.term-status-value { font-family: var(--font-display); font-size: 22px; color: var(--navy-900); margin: 4px 0 0; }
+.info-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 14px; }
+.info-block { background: var(--slate-100); border-radius: 12px; padding: 14px 16px; }
+.info-value { font-weight: 800; color: var(--navy-900); margin: 4px 0 0; font-size: 13px; }
+.chart-frame { height: 380px; position: relative; }
+.att-toggle-group { display: inline-flex; border: 1px solid var(--slate-300); border-radius: 10px; padding: 3px; background: var(--slate-100); }
+.att-btn { border: none; background: transparent; font-size: 10px; font-weight: 800; text-transform: uppercase; padding: 7px 14px; border-radius: 8px; cursor: pointer; color: var(--slate-700); }
+.att-btn-active-present { background: var(--green-700); color: #fff; }
+.att-btn-active-absent { background: var(--rose-600); color: #fff; }
+/* ---------------- REPORT CARD TEMPLATE (A4, single-page) ---------------- */
+.report-page {
+    background: #fff;
+    width: 210mm;
+    height: 297mm;
+    box-sizing: border-box;
+    padding: 9mm 13mm;
+    margin: 0 auto 16px;
+    font-family: var(--font-body);
+    color: #111;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+.report-page + .report-page {
+    page-break-before: always;
+    break-before: page;
+}
+/* On-screen preview only: the cards below are a fixed 210mm/297mm (A4) by
+   design, since that's what actually goes to print. On a phone that's wider
+   than the viewport, so this keeps the overflow scrollable inside the
+   preview box instead of pushing the whole page sideways. */
+#report-cards-preview, #own-report-preview {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 6px;
+}
+/* ---- Header: bigger, clearer visual hierarchy, still compact ---- */
+.rc-header-top { display: flex; align-items: center; gap: 13px; border-bottom: 3px solid var(--navy-900); padding-bottom: 7px; flex-shrink: 0; }
+.rc-logo { width: 62px; height: 62px; border-radius: 50%; object-fit: cover; border: 2px solid var(--gold-600); flex-shrink: 0; }
+.rc-school-info { flex: 1; text-align: center; }
+.rc-school-info h1 {
+    font-family: var(--font-display);
+    font-size: 23px;
+    font-weight: 700;
+    margin: 0 0 2px;
+    letter-spacing: 0.02em;
+    color: var(--navy-900);
+    line-height: 1.15;
+}
+.rc-school-info p { font-size: 10.3px; margin: 1px 0; color: #333; font-weight: 500; }
+.rc-motto { font-style: italic; font-weight: 700; color: var(--teal-700); }
+.rc-qr-box { width: 70px; height: 70px; border: 1.5px solid #999; display: flex; align-items: center; justify-content: center; font-size: 8px; text-align: center; flex-shrink: 0; color: #888; font-weight: 700; overflow: hidden; }
+.rc-qr-box img { width: 100%; height: 100%; object-fit: cover; }
+.rc-report-title {
+    text-align: center;
+    font-weight: 800;
+    font-size: 12.5px;
+    letter-spacing: 0.09em;
+    margin: 7px 0;
+    padding: 5px 0;
+    background: var(--navy-900);
+    color: #fff;
+    border-radius: 6px;
+    flex-shrink: 0;
+}
+.rc-learner-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px 18px;
+    font-size: 10px;
+    font-weight: 700;
+    margin-bottom: 6px;
+    background: var(--slate-100);
+    border-radius: 8px;
+    padding: 6px 12px;
+    flex-shrink: 0;
+}
+.rc-learner-row span { color: #555; margin-right: 3px; font-weight: 800; text-transform: uppercase; font-size: 8.5px; }
+.rc-tag { border: 1px solid #333; padding: 1px 7px; border-radius: 4px; font-weight: 800; }
+/* ---- Marks table ---- */
+.rc-table { width: 100%; border-collapse: collapse; margin-top: 4px; font-size: 9.5px; page-break-inside: avoid; flex-shrink: 0; }
+.rc-table th, .rc-table td { border: 1px solid #333; padding: 4px 6px; }
+.rc-table th { background: var(--navy-900); color: #fff; font-size: 8.2px; text-transform: uppercase; letter-spacing: 0.03em; }
+.rc-table tr { page-break-inside: avoid; }
+.rc-subj { font-weight: 700; text-align: left; }
+.rc-sub-tag { font-size: 7px; font-weight: 800; border: 1px solid #666; border-radius: 3px; padding: 1px 4px; color: #555; vertical-align: middle; }
+.rc-num { text-align: center; }
+.rc-final { font-weight: 800; text-align: center; }
+.rc-grade { font-weight: 800; text-align: center; }
+.rc-descriptor { font-size: 8.3px; text-align: center; }
+.rc-empty { text-align: center; color: #888; font-style: italic; padding: 14px 8px; }
+.rc-overall-row { display: flex; gap: 8px; align-items: stretch; margin-top: 7px; flex-wrap: wrap; page-break-inside: avoid; flex-shrink: 0; }
+.rc-overall-box { border: 1px solid #333; border-radius: 6px; padding: 4px 12px; display: flex; flex-direction: column; justify-content: center; min-width: 100px; background: var(--teal-50); }
+.rc-overall-label { font-size: 7.5px; font-weight: 800; text-transform: uppercase; color: #555; }
+.rc-overall-value { font-size: 13px; font-weight: 800; color: var(--navy-900); }
+.rc-legend-table { border-collapse: collapse; font-size: 8px; flex: 1; }
+.rc-legend-table td { border: 1px solid #333; padding: 2px 5px; text-align: center; }
+.rc-legend-head { background: var(--navy-900); color: #fff; font-weight: 800; }
+.rc-two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 7px; page-break-inside: avoid; flex-shrink: 0; }
+.rc-mini-table { width: 100%; border-collapse: collapse; font-size: 8px; }
+.rc-mini-table th, .rc-mini-table td { border: 1px solid #333; padding: 2px 6px; }
+.rc-mini-table th { background: var(--navy-900); color: #fff; text-align: left; }
+/* ---- Summary analytics: term snapshot, colour-coded subject bars, auto remark ---- */
+.rc-summary-section { margin-top: 7px; page-break-inside: avoid; flex-shrink: 0; }
+.rc-summary-grid { display: grid; grid-template-columns: 1fr 1.3fr; gap: 8px; }
+.rc-summary-card { border: 1px solid #333; border-radius: 8px; padding: 7px 10px; }
+.rc-summary-card h4 { margin: 0 0 5px; font-size: 8.3px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; color: #1d4ed8; border-bottom: 1px solid #ccc; padding-bottom: 4px; }
+.rc-summary-row { display: flex; justify-content: space-between; font-size: 9.5px; font-weight: 700; padding: 2.5px 0; color: #222; }
+.rc-summary-row span:first-child { color: #666; font-weight: 600; }
+.rc-bars-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 10px; }
+.rc-bar-row { display: flex; align-items: center; gap: 4px; font-size: 8px; margin: 2px 0; }
+.rc-bar-label { width: 68px; flex-shrink: 0; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #333; }
+.rc-bar-track { flex: 1; background: var(--slate-100); border-radius: 5px; height: 7px; overflow: hidden; border: 1px solid #ccc; }
+.rc-bar-fill { height: 100%; border-radius: 5px; }
+.rc-bar-score { width: 22px; text-align: right; font-weight: 800; font-size: 8px; }
+.rc-empty-note { font-size: 8.5px; color: #888; font-style: italic; margin: 3px 0; }
+.rc-remark-box { border: 1px solid #333; border-radius: 8px; padding: 7px 11px; margin-top: 6px; background: var(--gold-100); }
+.rc-remark-box h4 { margin: 0 0 4px; font-size: 8.3px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; color: var(--gold-600); }
+.rc-remark-box p { margin: 0; font-size: 9.3px; line-height: 1.45; color: #222; }
+/* ---- Footer: sign-off, comments, term dates ---- */
+.rc-footer { margin-top: auto; padding-top: 7px; page-break-inside: avoid; flex-shrink: 0; }
+.rc-comment-row { display: flex; align-items: baseline; gap: 8px; font-size: 9.5px; font-weight: 700; border-bottom: 1px solid #333; padding: 5px 0 4px; flex-wrap: wrap; }
+.rc-comment-label { color: #111; white-space: nowrap; }
+.rc-comment-line { flex: 1; min-width: 110px; font-weight: 500; border-bottom: 1px dotted #999; padding-bottom: 2px; }
+.rc-comment-editable { cursor: text; outline: none; border-radius: 3px; transition: background-color 0.15s ease; }
+.rc-comment-editable:hover { background-color: #eff6ff; }
+.rc-comment-editable:focus { background-color: #eff6ff; box-shadow: 0 0 0 1px #3b82f6; }
+.rc-comment-editable:empty:before { content: attr(data-placeholder); color: #9ca3af; font-weight: 400; font-style: italic; }
+.rc-sign { white-space: nowrap; }
+.rc-sign-line { display: inline-block; min-width: 90px; border-bottom: 1px solid #333; margin-left: 4px; }
+.rc-legal-row { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 6px 10px; margin-top: 8px; font-size: 8px; color: #333; }
+.rc-print-meta { color: #888; font-style: italic; font-size: 7.5px; text-align: center; flex: 1; min-width: 180px; }
+.rc-stamp-note { border: 1px solid #333; padding: 2px 9px; font-weight: 800; border-radius: 4px; }
+/* ---------------------------------------------------------
+   O-LEVEL REPORT — layout-only tightening.
+   The O-Level table has more columns (10 vs A-Level's 7) plus an
+   extra two-column legend block, so it runs tighter on vertical
+   space than the A-Level page. These overrides only touch
+   spacing/typography sizing (never the data/grades themselves)
+   so everything reliably fits on one page without overflowing
+   past the sheet or being clipped at the bottom.
+   --------------------------------------------------------- */
+.report-page-olevel { padding: 7mm 10mm; }
+.report-page-olevel .rc-table { font-size: 8.6px; }
+.report-page-olevel .rc-table th, .report-page-olevel .rc-table td { padding: 3px 4px; }
+.report-page-olevel .rc-descriptor { text-align: left; font-size: 7.8px; }
+.report-page-olevel .rc-report-title { margin: 5px 0; padding: 4px 0; }
+.report-page-olevel .rc-learner-row { margin-bottom: 5px; padding: 5px 10px; }
+.report-page-olevel .rc-overall-row { margin-top: 5px; }
+.report-page-olevel .rc-two-col { margin-top: 5px; gap: 6px; }
+.report-page-olevel .rc-summary-section { margin-top: 5px; }
+.report-page-olevel .rc-summary-card { padding: 5px 8px; }
+.report-page-olevel .rc-remark-box { padding: 5px 8px; margin-top: 4px; }
+.report-page-olevel .rc-footer { padding-top: 5px; }
+.report-page-olevel .rc-comment-row { padding: 4px 0 3px; }
+.report-page-olevel .rc-legal-row { margin-top: 5px; }
+/* ---------------------------------------------------------
+   A-LEVEL REPORT — layout-only spacing increase.
+   With fewer columns and no page-numbering/timestamp footer
+   line, the A-Level page ran with a lot of unused white space
+   below the content. These overrides only open up spacing
+   (padding/margins/gaps) so the same content fills the page
+   more evenly — no data, scores, or grading logic changes.
+   --------------------------------------------------------- */
+.report-page-alevel .rc-table { font-size: 11px; }
+.report-page-alevel .rc-table th, .report-page-alevel .rc-table td { padding: 8px 10px; }
+.report-page-alevel .rc-learner-row { padding: 9px 14px; margin-bottom: 10px; }
+.report-page-alevel .rc-overall-row { margin-top: 14px; gap: 14px; }
+.report-page-alevel .rc-overall-box { padding: 8px 20px; min-width: 140px; }
+.report-page-alevel .rc-legend-table { font-size: 9px; }
+.report-page-alevel .rc-legend-table td { padding: 4px 7px; }
+.report-page-alevel .rc-summary-section { margin-top: 16px; }
+.report-page-alevel .rc-summary-card { padding: 12px 16px; }
+.report-page-alevel .rc-summary-card h4 { margin-bottom: 8px; padding-bottom: 6px; }
+.report-page-alevel .rc-summary-row { padding: 4px 0; font-size: 10.5px; }
+.report-page-alevel .rc-bars-grid { gap: 5px 16px; }
+.report-page-alevel .rc-bar-row { margin: 4px 0; font-size: 9px; }
+.report-page-alevel .rc-remark-box { padding: 12px 16px; margin-top: 10px; }
+.report-page-alevel .rc-remark-box p { font-size: 10px; line-height: 1.6; }
+.report-page-alevel .rc-footer { padding-top: 14px; }
+.report-page-alevel .rc-comment-row { padding: 8px 0 7px; font-size: 10.5px; }
+.report-page-alevel .rc-legal-row { margin-top: 12px; }
+/* ---------------------------------------------------------
+   MOBILE INPUT ZOOM FIX
+   iOS Safari zooms the whole page in when a focused form field
+   renders below 16px, regardless of what the viewport meta tag
+   says. Every input/select/textarea in this app is forced to at
+   least 16px here so that never happens — only font-size is
+   touched, so padding/colors/widths set elsewhere are unaffected.
+   --------------------------------------------------------- */
+input, select, textarea {
+    font-size: 16px !important;
+}
+/* ---------------------------------------------------------
+   RESPONSIVE / MOBILE ADAPTATIONS
+   Desktop keeps the multi-column layout defined above unchanged.
+   Below ~900px the login screen stacks; below ~640px the app
+   header wraps and everything gets tighter spacing so nothing
+   pushes past the edge of a phone screen.
+   --------------------------------------------------------- */
+@media (max-width: 900px) {
+    .login-shell {
+        flex-direction: column;
+    }
+    .login-visual {
+        flex: none;
+        min-height: 320px;
+    }
+    .login-visual-content {
+        padding: 48px 28px;
+        padding-top: calc(48px + env(safe-area-inset-top));
+    }
+    .login-panel-wrap {
+        flex: none;
+        padding: 32px 20px;
+        padding-bottom: calc(32px + env(safe-area-inset-bottom));
+    }
+    .login-motto { margin-top: 24px; }
+}
+@media (max-width: 480px) {
+    .login-card { padding: 34px 26px; }
+    .login-visual-content { padding: 40px 22px; }
+    .login-visual h1 { font-size: clamp(22px, 7vw, 28px); }
+    .login-visual p.tagline { font-size: 13.5px; }
+}
+@media (max-width: 640px) {
+    .app-header { padding: 12px 14px; padding-top: 12px; padding-top: calc(12px + env(safe-area-inset-top)); flex-wrap: wrap; row-gap: 10px; }
+    .header-left { gap: 10px; }
+    .page-title { font-size: 15px; }
+    .header-right { flex-wrap: wrap; gap: 8px; justify-content: flex-end; width: 100%; }
+    .user-badge, .role-tag {
+        font-size: 9.5px;
+        padding: 5px 9px;
+    }
+    .logout-btn {
+        font-size: 10px;
+        padding: 8px 12px;
+    }
+    .main-content { padding: 16px; }
+    .panel-card { padding: 18px 16px; border-radius: 14px; }
+    .panel-header { gap: 10px; margin-bottom: 16px; padding-bottom: 12px; }
+    .panel-title { font-size: 15px; }
+    .form-panel { padding: 14px; }
+    .metric-card { padding: 14px 16px; }
+    .metric-value { font-size: 24px; }
+}
+/* ---------------- FINANCE: PAYMENT RECEIPT (physical slip) ----------------
+   Rendered into #print-area by printFinanceReceipt() in finance.js.
+   Sized to preview at 320px on screen (roughly an 80mm thermal slip
+   blown up for a monitor); the @media print block below locks it to
+   its true 80mm print width via a *named* @page ("receipt-slip") so
+   it prints as a slip instead of stretching across the A4 sheet that
+   #print-area's report-card content uses (see the plain `@page` rule
+   inside the main PRINT block further down). */
+.fin-receipt {
+    max-width: 320px;
+    margin: 0 auto;
+    padding: 18px 16px;
+    border: 1px solid #d4d4d8;
+    border-radius: 6px;
+    background: #fff;
+    color: #18181b;
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 12px;
+    line-height: 1.55;
+    page: receipt-slip; /* CSS Paged Media named page, honored on print */
+}
+
+.fin-receipt-header {
+    text-align: center;
+    padding-bottom: 10px;
+    margin-bottom: 10px;
+    border-bottom: 1px dashed #a1a1aa;
+}
+
+.fin-receipt-badge {
+    display: block;
+    margin: 0 auto 6px;
+    height: 52px;
+    width: auto;
+}
+
+.fin-receipt-school-name {
+    margin: 0 0 3px;
+    font-size: 13px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.fin-receipt-contact {
+    margin: 1px 0;
+    font-size: 10px;
+    color: #52525b;
+}
+
+.fin-receipt-title {
+    text-align: center;
+    margin: 0 0 12px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+}
+
+.fin-receipt-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 10px;
+    padding: 3px 0;
+}
+.fin-receipt-row .fin-receipt-label { color: #52525b; }
+.fin-receipt-row .fin-receipt-value { font-weight: 700; text-align: right; white-space: nowrap; }
+
+.fin-receipt-financials {
+    margin: 12px 0;
+    padding-top: 10px;
+    border-top: 1px dashed #a1a1aa;
+}
+
+/* "Amount Paid" — highlighted with a solid top border per spec. */
+.fin-receipt-amount-row {
+    border-top: 2px solid #18181b;
+    margin-top: 6px;
+    padding-top: 8px;
+}
+.fin-receipt-amount-row .fin-receipt-label { font-weight: 700; color: #18181b; }
+.fin-receipt-amount-row .fin-receipt-value { font-size: 16px; }
+
+/* "Balance Due" — sits right under Amount Paid, closed off with its own
+   dashed divider so the two financial rows read as one block. */
+.fin-receipt-balance-row {
+    padding-bottom: 8px;
+    border-bottom: 1px dashed #a1a1aa;
+}
+
+.fin-receipt-signoff {
+    margin-top: 12px;
+    padding-top: 8px;
+    font-size: 10.5px;
+}
+
+.fin-receipt-footer {
+    text-align: center;
+    font-size: 9px;
+    color: #a1a1aa;
+    margin-top: 16px;
+}
+
+@media print {
+    /* ---- Receipt-only print: hide EVERYTHING else on the page first.
+       This exists because #modal-root (the "Payment Recorded" popup) is
+       still in the DOM when the print dialog opens -- printFinanceReceipt()
+       calls window.print() synchronously, and the modal only closes
+       *after* that call returns, so without this it leaks into the print
+       preview alongside the receipt. printFinanceReceipt() toggles this
+       class onto <body> right before printing and removes it afterward. */
+    body.printing-receipt * {
+        display: none !important;
+    }
+    /* Then re-reveal ONLY #print-area and the receipt inside it. These are
+       ID/class-qualified selectors so they win over the blanket rule above
+       regardless of source order. */
+    body.printing-receipt #print-area,
+    body.printing-receipt #print-area .fin-receipt,
+    body.printing-receipt #print-area .fin-receipt * {
+        display: block !important;
+        visibility: visible !important;
+    }
+    /* The blanket display:none above would otherwise collapse the
+       receipt's key/value rows back to block -- restore their flex
+       layout specifically. */
+    body.printing-receipt #print-area .fin-receipt .fin-receipt-row {
+        display: flex !important;
+    }
+
+    .fin-receipt {
+        width: 80mm !important;
+        max-width: 80mm !important;
+        margin: 0 !important;
+        padding: 4mm 3mm;
+        border: none !important;
+        border-radius: 0;
+        box-shadow: none !important;
+        font-size: 10.5px;
+    }
+    /* Named page: only elements with `page: receipt-slip` (i.e. .fin-receipt)
+       get this 80mm slip size — report cards printed through the same
+       #print-area keep using the unnamed @page (A4) rule below. */
+    @page receipt-slip {
+        size: 80mm auto;
+        margin: 3mm;
+    }
+}
+
+/* ---------------- PRINT ---------------- */
+#print-area { display: none; }
+@media print {
+    #login-section, #dashboard-section, #sidebar-backdrop {
+        display: none !important;
+    }
+    #print-area {
+        display: block !important;
+        position: static;
+        width: 100%;
+        margin: 0;
+        padding: 0;
+    }
+    .report-page {
+        margin: 0 auto;
+        box-shadow: none;
+        /* FIX (layout desync): previously this box was shrunk to 190x277mm
+           on the assumption that the @page rule below was also carving a
+           10mm margin out of the physical sheet. Those were two independent
+           sources of truth for the same spacing -- and most browsers'
+           "Print / Save as PDF" dialogs override @page's margin with their
+           own Default/None/Custom setting, so the two numbers fell out of
+           sync and the content shifted, shrank, or misaligned relative to
+           what was shown on screen.
+           Fix: give the page the exact same physical footprint here as on
+           screen (210x297mm, same as the un-printed .report-page above),
+           set @page's margin to 0 below, and fold the old 10mm page-margin
+           into this box's own padding instead. Now there is exactly one
+           place that defines spacing, and it can't be overridden out from
+           under us by the browser's print-margin setting. */
+        width: 210mm;
+        height: 297mm;
+        padding: 14mm 17mm;
+    }
+    .rc-comment-editable:empty:before { content: ""; }
+    .rc-comment-editable { background-color: transparent !important; box-shadow: none !important; }
+    /* ---- Masthead: significantly larger and more prominent in print ---- */
+    .rc-header-top { padding-bottom: 6px; }
+    .rc-logo { width: 58px; height: 58px; }
+    .rc-qr-box { width: 64px; height: 64px; }
+    .rc-school-info h1 { font-size: 22px; margin-bottom: 2px; }
+    .rc-school-info p { font-size: 9.8px; margin: 1px 0; }
+    /* ---- Section gaps and table row padding opened up evenly so the
+       report stretches to naturally fill the printable area within the
+       210x297mm page (minus the padding above). Data, grades, and
+       structure are unchanged -- only the whitespace and row padding
+       around them grew. ---- */
+    .rc-report-title { margin: 6px 0; padding: 4px 0; font-size: 11.5px; }
+    .rc-learner-row { margin-bottom: 6px; padding: 5px 10px; gap: 5px 16px; }
+    .rc-table { margin-top: 4px; font-size: 9px; }
+    .rc-table th, .rc-table td { padding: 4.5px 6px; }
+    .rc-overall-row { margin-top: 6px; gap: 6px; }
+    .rc-overall-box { padding: 3px 10px; min-width: 90px; }
+    .rc-two-col { margin-top: 6px; gap: 6px; }
+    .rc-summary-section { margin-top: 6px; }
+    .rc-summary-card { padding: 5px 9px; }
+    .rc-summary-card h4 { margin-bottom: 3px; padding-bottom: 3px; }
+    .rc-summary-row { padding: 1.5px 0; }
+    .rc-bars-grid { gap: 1px 8px; }
+    .rc-bar-row { margin: 1px 0; }
+    .rc-remark-box { padding: 5px 9px; margin-top: 4px; }
+    .rc-remark-box p { font-size: 9px; line-height: 1.35; }
+    .rc-footer { padding-top: 6px; }
+    .rc-comment-row { padding: 4px 0 3px; }
+    .rc-legal-row { margin-top: 6px; }
+    /* ---- O-Level: denser table/legend needs a snugger fit so nothing
+       overflows past the sheet or gets clipped at the bottom. (Padding
+       here = old 3mm/6mm print padding + the old 10mm @page margin,
+       folded together now that @page margin is 0 -- same visual inset
+       as before, just computed in one place instead of two.) ---- */
+    .report-page.report-page-olevel { padding: 13mm 16mm; }
+    .report-page-olevel .rc-table { font-size: 8.3px; }
+    .report-page-olevel .rc-table th, .report-page-olevel .rc-table td { padding: 3px 4px; }
+    .report-page-olevel .rc-report-title { margin: 4px 0; padding: 3px 0; }
+    .report-page-olevel .rc-two-col { margin-top: 4px; gap: 4px; }
+    .report-page-olevel .rc-summary-section { margin-top: 4px; }
+    .report-page-olevel .rc-summary-card { padding: 4px 7px; }
+    .report-page-olevel .rc-remark-box { padding: 4px 7px; margin-top: 3px; }
+    .report-page-olevel .rc-footer { padding-top: 4px; }
+    .report-page-olevel .rc-legal-row { margin-top: 4px; }
+    /* ---- A-Level: fewer columns/rows, so open the spacing up to fill
+       the page evenly instead of leaving blank space below. (Padding
+       here = old 6mm/9mm print padding + the old 10mm @page margin,
+       folded together now that @page margin is 0 -- same visual inset
+       as before, just computed in one place instead of two.) ---- */
+    .report-page.report-page-alevel { padding: 16mm 19mm; }
+    .report-page-alevel .rc-table { font-size: 10.5px; }
+    .report-page-alevel .rc-table th, .report-page-alevel .rc-table td { padding: 7px 9px; }
+    .report-page-alevel .rc-overall-row { margin-top: 12px; gap: 12px; }
+    .report-page-alevel .rc-overall-box { padding: 7px 18px; min-width: 130px; }
+    .report-page-alevel .rc-summary-section { margin-top: 14px; }
+    .report-page-alevel .rc-summary-card { padding: 10px 14px; }
+    .report-page-alevel .rc-summary-row { padding: 3.5px 0; }
+    .report-page-alevel .rc-bars-grid { gap: 4px 14px; }
+    .report-page-alevel .rc-bar-row { margin: 3px 0; }
+    .report-page-alevel .rc-remark-box { padding: 10px 14px; margin-top: 9px; }
+    .report-page-alevel .rc-remark-box p { font-size: 9.8px; line-height: 1.55; }
+    .report-page-alevel .rc-footer { padding-top: 12px; }
+    .report-page-alevel .rc-comment-row { padding: 7px 0 6px; }
+    .report-page-alevel .rc-legal-row { margin-top: 10px; }
+    * {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+        color-adjust: exact !important;
+    }
+    @page {
+        size: A4;
+        /* Margin lives entirely in .report-page's own padding now (see
+           above) -- this is deliberately 0 so the browser can't apply a
+           second, independent margin on top of it. Some print dialogs
+           substitute their own "Default margins" for whatever @page sets
+           here regardless of the value, which was the original source of
+           the screen-vs-print layout desync; keeping this at 0 means even
+           when that substitution happens, there's no second inset being
+           added on top of the page's padding. */
+        margin: 0;
+    }
+}
+
+/* ---------------------------------------------------------
+   WELCOME BANNER (role-aware greeting shown above dashboard metrics)
+   --------------------------------------------------------- */
+.welcome-banner {
+    display: none;
+    background: linear-gradient(135deg, var(--teal-700), var(--navy-900));
+    color: #ffffff;
+    border-radius: 16px;
+    padding: 18px 22px;
+    margin-bottom: 20px;
+    font-weight: 800;
+    font-size: 13px;
+    letter-spacing: 0.02em;
+}
+.welcome-banner.visible { display: block; }
+.welcome-banner .banner-subtext {
+    display: block;
+    font-weight: 600;
+    font-size: 11px;
+    opacity: 0.85;
+    margin-top: 4px;
+    text-transform: none;
+    letter-spacing: normal;
+}
+
+/* ---------------------------------------------------------
+   MARKS ENTRY TABLE — SCROLL/STICKY DRIFT FIX
+   This table used Tailwind's `border-collapse` utility, which puts the
+   table in the "collapsing borders" model. That model doesn't compose
+   cleanly with `position: sticky` cells: the browser paints collapsed
+   borders on a shared table-wide border grid rather than on each cell's
+   own box, so during vertical scrolling the sticky "Full Name" column
+   (and the sticky header row) can visibly drift a pixel or two out of
+   alignment with the score-entry cells scrolling underneath them.
+   Switching to the "separate borders" model (border-collapse: separate;
+   border-spacing: 0) makes every border belong to its own cell, which
+   scrolls/repaints in lockstep with that cell — no more drift. Border-
+   spacing of 0 keeps cells visually flush, same as before.
+   NOTE: in the separate-borders model, only borders declared directly on
+   <td>/<th> are painted — borders declared on the <tr> (like the header's
+   existing `border-b`) or via the tbody's `divide-y` utility are ignored.
+   The two rules just below restore those exact borders at the cell level
+   so the table looks identical to before; only the drift is gone.
+   --------------------------------------------------------- */
+.score-table {
+    border-collapse: separate;
+    border-spacing: 0;
+}
+#score-table-head th {
+    border-bottom: 1px solid var(--slate-300); /* replaces the header <tr>'s border-b border-slate-200 */
+}
+#score-table-body tr:not(:first-child) td {
+    border-top: 1px solid var(--slate-100); /* replaces tbody's divide-y divide-slate-100 row dividers */
+}
+
+/* ---------------------------------------------------------
+   MARKS ENTRY TABLE — FROZEN FULL NAME COLUMN
+   The "Student ID" column has been removed from this table entirely
+   (see buildOLevelHeader/buildALevelRow etc. in script.js) to free up
+   room for mark inputs. "Full Name" is now the sole frozen column,
+   pinned to the left (Excel-style freeze pane) while horizontally
+   scrolling across to the AO/EOT/Final columns. No max-width/ellipsis
+   is applied here — the column has only a min-width and is left to
+   grow with its content so long names (e.g. "SEMWOGERERE LORIAN")
+   are never cut off. A solid background on the sticky cell is
+   required so the scrolling columns don't show through underneath;
+   the hover and error-row rules below keep that background in sync
+   with the row's own state instead of looking visually "stuck".
+   --------------------------------------------------------- */
+.score-sticky-name-col {
+    position: sticky;
+    left: 0;
+    z-index: 2;
+    background-color: #fff;
+    min-width: 180px;
+    white-space: nowrap;
+    box-shadow: 4px 0 6px -4px rgba(30, 58, 138, 0.2);
+}
+
+/* ---------------------------------------------------------
+   MARKS ENTRY TABLE — COMPACT CELLS + INPUT SIZING
+   #score-table-head / #score-table-body are the two containers
+   rendered in renderScoresModule (script.js); scoping padding
+   overrides to their th/td keeps this from touching any other
+   table in the app. score-mark-input is applied only to the
+   actual AO1/AO2/EOT/Paper 1/Paper 2 entry boxes (see
+   buildOLevelRow/buildALevelRow), never the wider Remarks /
+   TR's Initial text inputs.
+   --------------------------------------------------------- */
+#score-table-head th,
+#score-table-body td {
+    padding-top: 8px;
+    padding-bottom: 8px;
+    padding-left: 8px;
+    padding-right: 8px;
+    line-height: 1.25;
+}
+.score-mark-input {
+    width: 48px;
+    padding: 5px 4px;
+}
+
+/* Below 640px: shrink the frozen ID/Name columns further, tighten
+   cell padding again, and shrink the mark-entry boxes so at least
+   two assessment columns (e.g. AO1 + AO2) are visible side-by-side
+   in the remaining viewport without horizontal scrolling. */
+@media (max-width: 640px) {
+    .score-sticky-name-col {
+        min-width: 140px;
+        font-size: 11px;
+    }
+    #score-table-head th,
+    #score-table-body td {
+        padding-top: 6px;
+        padding-bottom: 6px;
+        padding-left: 5px;
+        padding-right: 5px;
+        font-size: 11px;
+    }
+    #score-table-head th {
+        font-size: 9px;
+    }
+    .score-mark-input {
+        width: 38px;
+        padding: 4px 2px;
+        font-size: 11px;
+    }
+}
+/* ---------------------------------------------------------
+   SCORE TAB TABLE — SELF-CONTAINED STICKY HEADER
+   The wrapper around the marks-entry table (see renderScoresModule
+   in script.js) is its own bounded, scrollable box (max-h + overflow-auto).
+   Every header cell in #score-table-head gets `position: sticky; top: 0`
+   here, so all headers (including the frozen "Full Name" header) stay
+   visible when scrolling the student list down — scoped entirely to the
+   Score tab's own scrollable table container, it never affects the outer
+   page, the app header, or any other tab.
+   --------------------------------------------------------- */
+#score-table-head th {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background-color: #f8fafc;
+}
+#score-table-head th.score-sticky-name-col {
+    /* This corner cell is frozen on both axes at once (left, via the
+       score-sticky-name-col rule above, AND top, via the rule directly
+       above), so it needs to stay above the plain top-only sticky
+       header cells (z-index: 10) as the table scrolls horizontally
+       underneath it. */
+    z-index: 30;
+}
+tbody tr:hover .score-sticky-name-col {
+    background-color: #f8fafc;
+}
+tr.score-save-error .score-sticky-name-col {
+    background-color: #fef2f2 !important;
+}
+
+/* ---------------------------------------------------------
+   SCORE SAVE STATUS (row highlight + toast notifications)
+   Surfaces backend save failures that used to fail silently —
+   see updateMarks/handleScoreSaveError in script.js.
+   --------------------------------------------------------- */
+tr.score-save-error {
+    background-color: #fef2f2 !important;
+    box-shadow: inset 3px 0 0 #dc2626;
+}
+tr.score-save-error input {
+    border-color: #dc2626 !important;
+    background-color: #fff5f5 !important;
+}
+#app-toast-container {
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    z-index: 9999;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    max-width: 360px;
+}
+.app-toast {
+    padding: 12px 16px;
+    border-radius: 10px;
+    font-size: 12px;
+    font-weight: 700;
+    line-height: 1.4;
+    color: #ffffff;
+    opacity: 0;
+    transform: translateY(-8px);
+    transition: opacity 0.25s ease, transform 0.25s ease;
+    box-shadow: 0 8px 20px rgba(0,0,0,0.18);
+}
+.app-toast.visible { opacity: 1; transform: translateY(0); }
+.app-toast-error { background: #dc2626; }
+.app-toast-warning { background: #3f3f46; }
+.app-toast-success { background: #16a34a; }
+
+/* =========================================================================
+   MAROON THEME OVERRIDE
+   Redefines the --teal-* variables (previously blue) to a deep maroon,
+   since that family already drives every primary action button, active
+   sidebar link, and hover state in this file. Placed at the end of the
+   stylesheet so it wins the cascade without needing !important.
+   Charcoal backgrounds (--navy-*) and white text are untouched.
+   ========================================================================= */
+:root {
+    --teal-900: #3d1010;   /* deepest maroon — reserved for extra emphasis */
+    --teal-800: #4a1414;   /* hover/pressed state for primary buttons */
+    --teal-700: #6b1d1d;   /* base maroon — primary buttons, active nav link */
+    --teal-600: #8a3030;   /* lighter maroon — small accents, headings */
+    --teal-100: #f0dcdc;   /* pale maroon tint — light-surface accents */
+    --teal-50:  #faf1f1;   /* faintest tint — subtle card backgrounds */
+}
+
+/* Hardcoded hex fallback that doesn't read from the variables above —
+   without it, .nav-link:hover (a legacy/unused-by-sidebar selector kept
+   for any other consumer) would stay blue. Load Term's hover no longer
+   needs an entry here: it's fully driven by the dark-neutral
+   .btn-neu-raised skin now, independent of this maroon theme swap. */
+.nav-link:hover {
+    background: rgba(107, 29, 29, 0.28);
+    color: #fff;
+}
