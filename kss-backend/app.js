@@ -78,6 +78,18 @@ app.use('/api/auth/login', authLimiter);
 // password guarding sensitive data, so it deserves the same limiter.
 app.use('/api/finance-auth/verify-password', authLimiter);
 
+// --- Root welcome route ---
+// This process is a JSON API only (the frontend is deployed separately), so
+// hitting the bare domain used to show Express's default "Cannot GET /".
+// Return a friendly status message instead.
+app.get('/', (req, res) => {
+  res.json({
+    ok: true,
+    message: 'Kalongo Seed Secondary School Portal API is running',
+    health: '/api/health'
+  });
+});
+
 // --- Health check (useful for Vercel/Render uptime checks) ---
 app.get('/api/health', (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
 
@@ -117,6 +129,9 @@ app.use('/api/admin', adminStaffRoutes);
 
 // --- 404 for unmatched /api routes ---
 app.use('/api', (req, res) => res.status(404).json({ message: 'Not found.' }));
+
+// --- 404 for everything else (e.g. /favicon.ico, /login) ---
+app.use((req, res) => res.status(404).json({ message: 'Not found.' }));
 
 // --- Centralized error handler ---
 // eslint-disable-next-line no-unused-vars
