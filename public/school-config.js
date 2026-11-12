@@ -13,8 +13,14 @@ window.SCHOOL = {
     address: '',   // e.g. 'P.O BOX 123, KALONGO-UGANDA'
     phone: '',     // e.g. '0700 000000 / 0750 000000'
     idPrefix: 'KSS',
-    // URL of THIS school's own deployed backend (must end in /api).
-    backendUrl: 'https://YOUR-KSS-BACKEND.vercel.app/api'
+    // Backend API URL. '/api' = same Vercel project as this site (deployed).
+    // When the page is opened from localhost on any port other than 5000
+    // (e.g. VS Code Live Server on :5500), use the local backend instead.
+    backendUrl: (function () {
+        var h = location.hostname, p = location.port;
+        var local = (h === 'localhost' || h === '127.0.0.1') && p && p !== '5000';
+        return local ? 'http://localhost:5000/api' : '/api';
+    })()
 };
 window.SCHOOL.mottoUpper = window.SCHOOL.motto.toUpperCase();
 
