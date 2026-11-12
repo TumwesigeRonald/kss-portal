@@ -10,7 +10,7 @@ window.SCHOOL = {
     shortName: 'KSS',
     motto: 'Persevere To Be Sure',
     // Printed under the school name on documents. Leave '' to hide a line.
-    address: '',   // e.g. 'P.O BOX 123, KALONGO-UGANDA'
+    address: 'P.O BOX 1 NAKASONGOLA',
     phone: '',     // e.g. '0700 000000 / 0750 000000'
     idPrefix: 'KSS',
     // Backend API URL. '/api' = same Vercel project as this site (deployed).

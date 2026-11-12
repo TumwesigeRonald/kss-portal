@@ -505,6 +505,7 @@ function exportToolboxToWord() {
     const headerHtml = `
         <div style="text-align:center; margin-bottom:16pt;">
             <h2 style="margin:0;">${SCHOOL.name}</h2>
+            ${SCHOOL.address ? `<p style="margin:2pt 0 0;">${SCHOOL.address}</p>` : ""}
             <p style="margin:2pt 0 12pt; font-weight:bold; text-transform:uppercase;">${escHtml(tool.label)}</p>
         </div>
         <table style="width:100%; border:none; margin-bottom:14pt; font-size:11pt;">

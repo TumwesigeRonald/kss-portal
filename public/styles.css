@@ -176,15 +176,19 @@ img {
 }
 .login-badge-row {
     display: flex;
+    flex-direction: column;
     align-items: center;
+    text-align: center;
     gap: 16px;
     margin-bottom: 28px;
 }
 .login-badge-row img {
-    width: 60px; height: 60px;
+    width: 110px; height: 110px;
     border-radius: 50%;
     object-fit: cover;
-    border: 1px solid rgba(255,255,255,0.12);
+    background: #fff;
+    border: 2px solid rgba(255,255,255,0.18);
+    box-shadow: 0 6px 20px rgba(0,0,0,0.45);
     flex-shrink: 0;
 }
 /* Selector targets h3 to match the heading element used in index.html. */
@@ -195,6 +199,7 @@ img {
     margin: 0;
     font-weight: 800;
     letter-spacing: 0.01em;
+    text-align: center;
     background: linear-gradient(90deg, #ffffff 0%, #a7f3d0 55%, #6ee7b7 100%);
     -webkit-background-clip: text;
     background-clip: text;
